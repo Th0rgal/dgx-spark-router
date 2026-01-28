@@ -1,0 +1,16 @@
+[Unit]
+Description=DGX Spark Multi-Model Router
+After=network.target
+
+[Service]
+Type=simple
+User=th0rgal
+WorkingDirectory=/home/th0rgal
+Environment="LLAMA_PORT=8001"
+ExecStartPre=/home/th0rgal/swap-model.sh minimax
+ExecStart=/usr/bin/python3 /home/th0rgal/router.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
