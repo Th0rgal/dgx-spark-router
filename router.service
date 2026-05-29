@@ -1,6 +1,7 @@
 [Unit]
 Description=DGX Spark Multi-Model Router
-After=network.target
+After=network.target docker.service
+Wants=docker.service
 
 [Service]
 Type=simple
@@ -11,6 +12,7 @@ ExecStartPre=/home/th0rgal/swap-model.sh minimax
 ExecStart=/usr/bin/python3 /home/th0rgal/router.py
 Restart=on-failure
 RestartSec=10
+TimeoutStartSec=600
 
 [Install]
 WantedBy=multi-user.target
