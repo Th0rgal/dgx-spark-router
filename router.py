@@ -11,16 +11,23 @@ MODELS = {
     "minimax": "minimax", "minimax-m2.1": "minimax", "tool-calling": "minimax", "coding": "minimax",
     "gpt-oss": "gpt-oss", "gpt-oss-120b": "gpt-oss", "scientific": "gpt-oss", "writing": "gpt-oss",
     "glm-flash": "glm-flash", "glm-4.7-flash": "glm-flash", "fast": "glm-flash",
+    "leanstral": "leanstral", "leanstral-2603": "leanstral", "lean4": "leanstral", "proving": "leanstral",
+    "kat-dev": "kat-dev", "kat-dev-72b": "kat-dev", "kat-dev-72b-exp": "kat-dev", "kat-coder": "kat-dev",
+    "qwen3.5-397b": "qwen35-397b", "qwen35-397b": "qwen35-397b", "qwen": "qwen35-397b",
+    "qwen-3.5": "qwen35-397b", "qwen3.5": "qwen35-397b", "best-qwen": "qwen35-397b",
     "deepseek": "deepseek", "deepseek-v4": "deepseek", "deepseek-v4-flash": "deepseek",
     "deepseek-v4-flash-spark": "deepseek", "reasoning": "deepseek", "thinking": "deepseek",
 }
 
-VALID_MODELS = {"minimax", "gpt-oss", "glm-flash", "deepseek"}
+VALID_MODELS = {"minimax", "gpt-oss", "glm-flash", "leanstral", "kat-dev", "qwen35-397b", "deepseek"}
 
 MODEL_INFO = [
     {"id": "minimax-m2.1", "object": "model", "canonical": "minimax"},
     {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
     {"id": "glm-4.7-flash", "object": "model", "canonical": "glm-flash"},
+    {"id": "leanstral-2603", "object": "model", "canonical": "leanstral"},
+    {"id": "kat-dev-72b-exp", "object": "model", "canonical": "kat-dev"},
+    {"id": "qwen3.5-397b", "object": "model", "canonical": "qwen35-397b"},
     {"id": "deepseek-v4-flash", "object": "model", "canonical": "deepseek"},
 ]
 
@@ -54,7 +61,7 @@ class Router:
                 env = os.environ.copy()
                 env["LLAMA_PORT"] = str(BACKEND_PORT)
                 r = subprocess.run(["bash", os.path.expanduser("~/swap-model.sh"), name],
-                                 capture_output=True, text=True, timeout=600, env=env)
+                                 capture_output=True, text=True, timeout=900, env=env)
                 d = json.loads(r.stdout)
                 if d.get("status") == "ready":
                     self.current = name
@@ -149,8 +156,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: minimax-m2.1, gpt-oss-120b, glm-4.7-flash, deepseek-v4-flash")
-    print(f"Aliases: tool-calling, coding, scientific, writing, fast, reasoning, thinking")
+    print(f"Models: minimax-m2.1, gpt-oss-120b, glm-4.7-flash, leanstral-2603, kat-dev-72b-exp, qwen3.5-397b, deepseek-v4-flash")
+    print(f"Aliases: tool-calling, coding, scientific, writing, fast, lean4, proving, kat-coder, qwen, reasoning, thinking")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")

@@ -6,18 +6,23 @@ export LD_LIBRARY_PATH="$LLAMA_DIR:$LD_LIBRARY_PATH"
 PORT="${LLAMA_PORT:-8001}"
 LOG="$HOME/llama-server.log"
 DEEPSEEK_CONTAINER="deepseek-vllm-backend"
+N_GPU_LAYERS=99
+READY_ATTEMPTS=120
 
 declare -A MODELS
 MODELS[minimax]="$HOME/models/MiniMax-M2.1-GGUF/UD-Q2_K_XL/MiniMax-M2.1-UD-Q2_K_XL-00001-of-00002.gguf"
 MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
 MODELS[glm-flash]="$HOME/models/GLM-4.7-Flash-GGUF/GLM-4.7-Flash-Q4_K_M.gguf"
+MODELS[leanstral]="$HOME/models/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
+MODELS[kat-dev]="$HOME/models/KAT-Dev-72B-Exp-GGUF/KAT-Dev-72B-Exp.i1-Q4_K_M.gguf"
+MODELS[qwen35-397b]="$HOME/models/Qwen3.5-397B-A17B-GGUF/UD-IQ2_XXS/Qwen3.5-397B-A17B-UD-IQ2_XXS-00001-of-00004.gguf"
 
 declare -A VLLM_MODELS
 VLLM_MODELS[deepseek]="deepseek"
 
 usage() {
     echo "Usage: $0 <model-name|status|stop>"
-    echo "llama.cpp models: minimax, gpt-oss, glm-flash"
+    echo "llama.cpp models: minimax, gpt-oss, glm-flash, leanstral, kat-dev, qwen35-397b"
     echo "vLLM models: deepseek"
     echo "Set LLAMA_PORT env var to change port (default: 8001)"
     exit 1
@@ -35,6 +40,9 @@ get_status() {
         [[ "$cmd" == *"MiniMax"* ]] && model="minimax"
         [[ "$cmd" == *"gpt-oss"* ]] && model="gpt-oss"
         [[ "$cmd" == *"GLM"* ]] && model="glm-flash"
+        [[ "$cmd" == *"Leanstral"* ]] && model="leanstral"
+        [[ "$cmd" == *"KAT-Dev"* ]] && model="kat-dev"
+        [[ "$cmd" == *"Qwen3.5-397B"* ]] && model="qwen35-397b"
         echo "{\"status\":\"running\",\"model\":\"$model\",\"backend\":\"llama.cpp\",\"pid\":$llama_pid}"
     else
         echo '{"status":"stopped","model":null}'
@@ -77,16 +85,33 @@ start_llama_model() {
 
     stop_all
 
+    # Build model-specific flags
+    local EXTRA_FLAGS=()
+    case "$model_name" in
+        leanstral)
+            EXTRA_FLAGS+=(-fa on -fit on -c 65536)
+            EXTRA_FLAGS+=(--chat-template-file "$HOME/models/Leanstral-2603-GGUF/chat_template.jinja")
+            ;;
+        qwen35-397b)
+            N_GPU_LAYERS=64
+            READY_ATTEMPTS=300
+            EXTRA_FLAGS+=(-fa on -c 512 -np 1 --reasoning-format deepseek --reasoning off)
+            ;;
+        *)
+            EXTRA_FLAGS+=(-c 4096)
+            ;;
+    esac
+
     nohup "$LLAMA_DIR/llama-server" \
         -m "$model_path" \
-        -ngl 99 \
-        -c 4096 \
+        -ngl "$N_GPU_LAYERS" \
         --host 0.0.0.0 \
         --port "$PORT" \
         --jinja \
+        "${EXTRA_FLAGS[@]}" \
         > "$LOG" 2>&1 &
 
-    for i in $(seq 1 120); do
+    for i in $(seq 1 "$READY_ATTEMPTS"); do
         if curl -s "http://localhost:$PORT/health" 2>/dev/null | grep -q "ok"; then
             echo "{\"status\":\"ready\",\"model\":\"$model_name\",\"port\":$PORT}"
             exit 0
