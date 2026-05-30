@@ -23,23 +23,23 @@ MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.88}
 THINKING=${THINKING:-true}
 SPECULATIVE_CONFIG=${SPECULATIVE_CONFIG:-'{"method":"deepseek_mtp","num_speculative_tokens":2}'}
-WATCHDOG_MIN_AVAILABLE_KB=${WATCHDOG_MIN_AVAILABLE_KB:-6291456}
+WATCHDOG_MIN_AVAILABLE_KB=${WATCHDOG_MIN_AVAILABLE_KB:-4194304}
 
 MODEL_DIR="${HF_HOME}/models--${MODEL_REPO//\//--}/snapshots/${MODEL_REVISION}"
 if [ ! -d "$MODEL_DIR" ]; then
-    echo "Model not found at: $MODEL_DIR"
-    echo "Run install-deepseek.sh first to download the model and Docker image."
+    echo "Model not found at: $MODEL_DIR" >&2
+    echo '{"status":"error","message":"Model not downloaded. Run install-deepseek.sh first."}'
     exit 1
 fi
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "Docker image $IMAGE not found."
-    echo "Run install-deepseek.sh first."
+    echo "Docker image $IMAGE not found." >&2
+    echo '{"status":"error","message":"Docker image not found. Run install-deepseek.sh first."}'
     exit 1
 fi
 
 if [ ! -f "$PATCHER" ]; then
-    echo "Warning: patcher not found at $PATCHER, will attempt without patching"
+    echo "Warning: patcher not found at $PATCHER, will attempt without patching" >&2
 fi
 
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -129,13 +129,13 @@ docker run -d \
   -e K160_DISABLE_CUTEDSL=0 \
   -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
   "$IMAGE" \
-  -lc "$ENTRYPOINT_CMD"
+  -lc "$ENTRYPOINT_CMD" >/dev/null
 
-echo "DeepSeek container '$CONTAINER_NAME' started, waiting for health check..."
+echo "DeepSeek container '$CONTAINER_NAME' started, waiting for health check..." >&2
 
 for i in $(seq 1 260); do
-    if curl -s "http://localhost:$PORT/health" 2>/dev/null | grep -q "ok\|healthy"; then
-        echo "{\"status\":\"ready\",\"model\":\"deepseek\",\"port\":$PORT}"
+    if curl -so /dev/null -w '%{http_code}' "http://localhost:$PORT/health" 2>/dev/null | grep -q "200"; then
+        echo "{\"status\":\"ready\",\"model\":\"deepseek-v4-flash\",\"port\":$PORT}"
         exit 0
     fi
     sleep 2

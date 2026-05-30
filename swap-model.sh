@@ -18,12 +18,12 @@ MODELS[kat-dev]="$HOME/models/KAT-Dev-72B-Exp-GGUF/KAT-Dev-72B-Exp.i1-Q4_K_M.ggu
 MODELS[qwen35-397b]="$HOME/models/Qwen3.5-397B-A17B-GGUF/UD-IQ2_XXS/Qwen3.5-397B-A17B-UD-IQ2_XXS-00001-of-00004.gguf"
 
 declare -A VLLM_MODELS
-VLLM_MODELS[deepseek]="deepseek"
+VLLM_MODELS[deepseek-v4-flash]="deepseek-v4-flash"
 
 usage() {
     echo "Usage: $0 <model-name|status|stop>"
     echo "llama.cpp models: minimax, gpt-oss, glm-flash, leanstral, kat-dev, qwen35-397b"
-    echo "vLLM models: deepseek"
+    echo "vLLM models: deepseek-v4-flash"
     echo "Set LLAMA_PORT env var to change port (default: 8001)"
     exit 1
 }
@@ -33,7 +33,7 @@ get_status() {
     local docker_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -x "$DEEPSEEK_CONTAINER" || true)
 
     if [ -n "$docker_running" ]; then
-        echo "{\"status\":\"running\",\"model\":\"deepseek\",\"backend\":\"vllm-docker\"}"
+        echo "{\"status\":\"running\",\"model\":\"deepseek-v4-flash\",\"backend\":\"vllm-docker\"}"
     elif [ -n "$llama_pid" ]; then
         local cmd=$(ps -p "$llama_pid" -o args= 2>/dev/null || true)
         local model="unknown"
@@ -135,9 +135,9 @@ if [ -n "${VLLM_MODELS[$MODEL_NAME]+x}" ]; then
     start_deepseek
 elif [ -n "${MODELS[$MODEL_NAME]+x}" ]; then
     MODEL_PATH="${MODELS[$MODEL_NAME]}"
-    [ ! -f "$MODEL_PATH" ] && { echo "Model not found: $MODEL_PATH"; exit 1; }
+    [ ! -f "$MODEL_PATH" ] && { echo "{\"status\":\"error\",\"message\":\"Model file not found: $MODEL_PATH\"}"; exit 1; }
     start_llama_model "$MODEL_NAME"
 else
-    echo "Unknown model: $MODEL_NAME"
-    usage
+    echo "{\"status\":\"error\",\"message\":\"Unknown model: $MODEL_NAME\"}"
+    exit 1
 fi

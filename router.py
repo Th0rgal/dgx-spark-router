@@ -15,11 +15,11 @@ MODELS = {
     "kat-dev": "kat-dev", "kat-dev-72b": "kat-dev", "kat-dev-72b-exp": "kat-dev", "kat-coder": "kat-dev",
     "qwen3.5-397b": "qwen35-397b", "qwen35-397b": "qwen35-397b", "qwen": "qwen35-397b",
     "qwen-3.5": "qwen35-397b", "qwen3.5": "qwen35-397b", "best-qwen": "qwen35-397b",
-    "deepseek": "deepseek", "deepseek-v4": "deepseek", "deepseek-v4-flash": "deepseek",
-    "deepseek-v4-flash-spark": "deepseek", "reasoning": "deepseek", "thinking": "deepseek",
+    "deepseek-v4-flash": "deepseek-v4-flash", "deepseek": "deepseek-v4-flash", "deepseek-v4": "deepseek-v4-flash",
+    "deepseek-v4-flash-spark": "deepseek-v4-flash", "reasoning": "deepseek-v4-flash", "thinking": "deepseek-v4-flash",
 }
 
-VALID_MODELS = {"minimax", "gpt-oss", "glm-flash", "leanstral", "kat-dev", "qwen35-397b", "deepseek"}
+VALID_MODELS = {"minimax", "gpt-oss", "glm-flash", "leanstral", "kat-dev", "qwen35-397b", "deepseek-v4-flash"}
 
 MODEL_INFO = [
     {"id": "minimax-m2.1", "object": "model", "canonical": "minimax"},
@@ -28,7 +28,7 @@ MODEL_INFO = [
     {"id": "leanstral-2603", "object": "model", "canonical": "leanstral"},
     {"id": "kat-dev-72b-exp", "object": "model", "canonical": "kat-dev"},
     {"id": "qwen3.5-397b", "object": "model", "canonical": "qwen35-397b"},
-    {"id": "deepseek-v4-flash", "object": "model", "canonical": "deepseek"},
+    {"id": "deepseek-v4-flash", "object": "model", "canonical": "deepseek-v4-flash"},
 ]
 
 class Router:
@@ -62,12 +62,12 @@ class Router:
                 env["LLAMA_PORT"] = str(BACKEND_PORT)
                 r = subprocess.run(["bash", os.path.expanduser("~/swap-model.sh"), name],
                                  capture_output=True, text=True, timeout=900, env=env)
-                d = json.loads(r.stdout)
+                d = json.loads(r.stdout.strip().split('\n')[-1])
                 if d.get("status") == "ready":
                     self.current = name
                     print(f"[Router] Ready in {time.time()-t0:.1f}s")
                     return True, None
-                return False, f"Swap failed: {r.stdout}"
+                return False, d.get("message", f"Swap failed: {r.stdout}")
             except Exception as e:
                 return False, str(e)
 
