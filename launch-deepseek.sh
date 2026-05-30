@@ -16,14 +16,21 @@ MODEL_REVISION=${MODEL_REVISION:-7c360e1cd4a5168099dbc54d16d929bf6df04990}
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-deepseek-v4-flash}
 
 CONTEXT_LENGTH=${CONTEXT_LENGTH:-200000}
-KV_CACHE_MEMORY_BYTES=${KV_CACHE_MEMORY_BYTES:-6G}
+# The 180B weights alone occupy ~104GB of the 128GB unified memory, so
+# gpu-memory-utilization cannot be lowered without failing to load. The only
+# headroom we control is the inference working set (KV cache + prefill batch).
+# A 6G KV cache with a 4096-token prefill batch pushed MemAvailable below the
+# watchdog floor during generation, so the backend was OOM-killed mid-run.
+# Measured on-device: 4G KV + 2048 batch keeps MemAvailable above ~7.4GB even
+# under a 2k-token prompt / 2k-token generation, leaving a wide safety margin.
+KV_CACHE_MEMORY_BYTES=${KV_CACHE_MEMORY_BYTES:-4G}
 KV_CACHE_DTYPE=${KV_CACHE_DTYPE:-fp8}
-MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-4096}
+MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-2048}
 MAX_NUM_SEQS=${MAX_NUM_SEQS:-1}
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.88}
 THINKING=${THINKING:-true}
 SPECULATIVE_CONFIG=${SPECULATIVE_CONFIG:-'{"method":"deepseek_mtp","num_speculative_tokens":2}'}
-WATCHDOG_MIN_AVAILABLE_KB=${WATCHDOG_MIN_AVAILABLE_KB:-4194304}
+WATCHDOG_MIN_AVAILABLE_KB=${WATCHDOG_MIN_AVAILABLE_KB:-3145728}
 
 MODEL_DIR="${HF_HOME}/models--${MODEL_REPO//\//--}/snapshots/${MODEL_REVISION}"
 if [ ! -d "$MODEL_DIR" ]; then

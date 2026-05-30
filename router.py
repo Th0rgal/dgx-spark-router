@@ -46,14 +46,30 @@ class Router:
             print(f"[Router] Current model: {self.current}")
         except: pass
 
+    def resolve(self, model):
+        return MODELS.get(model, MODELS.get(model.lower(), model))
+
+    def _backend_alive(self):
+        try:
+            req = urllib.request.Request(f"http://localhost:{BACKEND_PORT}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return 200 <= r.status < 300
+        except Exception:
+            return False
+
     def ensure(self, model):
-        name = MODELS.get(model, MODELS.get(model.lower(), model))
+        name = self.resolve(model)
         if name not in VALID_MODELS:
             return False, f"Unknown model: {model}"
 
         with self.lock:
             if self.current == name:
-                return True, None
+                if self._backend_alive():
+                    return True, None
+                # Backend died out from under us (crash, OOM, watchdog kill).
+                # Drop the stale state and fall through to relaunch it.
+                print(f"[Router] Backend for {name} is unreachable; relaunching...")
+                self.current = None
 
             print(f"[Router] Swapping to {name}...")
             t0 = time.time()
@@ -82,6 +98,11 @@ class Router:
                 return r.status, dict(r.headers), r.read()
         except urllib.error.HTTPError as e:
             return e.code, {}, e.read()
+        except urllib.error.URLError as e:
+            # Connection refused / backend down: clear stale state so the next
+            # chat request relaunches it and /v1/models stops reporting it active.
+            self.current = None
+            return 503, {}, json.dumps({"error": f"backend unavailable: {e.reason}"}).encode()
         except Exception as e:
             return 500, {}, json.dumps({"error": str(e)}).encode()
 
@@ -130,7 +151,8 @@ class Handler(BaseHTTPRequestHandler):
         if '/chat/completions' in self.path:
             try:
                 data = json.loads(body)
-                ok, err = router.ensure(data.get('model', 'minimax'))
+                requested = data.get('model', 'minimax')
+                ok, err = router.ensure(requested)
                 if not ok:
                     self.send_response(400)
                     self._cors()
@@ -138,6 +160,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(json.dumps({"error": {"message": err}}).encode())
                     return
+                # Rewrite the alias to the backend's served model name. vLLM
+                # validates the model field against --served-model-name and 404s
+                # on anything else, so "deepseek"/"reasoning"/etc. must become
+                # the canonical id before forwarding. (llama.cpp ignores it.)
+                data['model'] = router.resolve(requested)
+                body = json.dumps(data).encode()
             except json.JSONDecodeError as e:
                 self.send_response(400)
                 self._cors()
