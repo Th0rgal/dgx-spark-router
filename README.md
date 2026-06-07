@@ -1,30 +1,34 @@
 # DGX Spark Multi-Model Router
 
-An OpenAI-compatible API router that automatically switches between multiple models on NVIDIA DGX Spark. Supports both llama.cpp (GGUF) and vLLM (Docker) backends.
+An OpenAI-compatible API router that automatically switches between multiple models on NVIDIA DGX Spark. Supports both llama.cpp (GGUF) and vLLM (Docker, NVFP4) backends.
 
 ## Features
 
 - **OpenAI-compatible API** — Drop-in replacement for `/v1/chat/completions`
 - **Automatic model switching** — Request any model by name, router handles the swap
-- **Dual backend** — llama.cpp for GGUF models, vLLM Docker for DeepSeek V4
-- **Model aliases** — Use semantic names like `coding`, `scientific`, `fast`, `reasoning`
-- **Zero dependencies** — Pure Python stdlib, no pip packages required
+- **Dual backend** — llama.cpp for GGUF models, vLLM Docker for NVFP4 models
+- **Model registry** — vLLM models are defined declaratively in `vllm-registry.sh`
+- **Model aliases** — Use semantic names like `scientific`, `proving`, `reasoning`
+- **Zero dependencies** — Router is pure Python stdlib, no pip packages required
 
 ## Supported Models
 
 | Model | Aliases | Backend | Best For |
 |-------|---------|---------|----------|
-| MiniMax M2.1 | `minimax`, `minimax-m2.1`, `coding`, `tool-calling` | llama.cpp | Tool calling, code generation |
 | GPT-OSS 120B | `gpt-oss`, `gpt-oss-120b`, `scientific`, `writing` | llama.cpp | Scientific reasoning, reports |
-| GLM-4.7 Flash | `glm-flash`, `glm-4.7-flash`, `fast` | llama.cpp | Quick queries, low memory |
-| DeepSeek V4 Flash | `deepseek`, `deepseek-v4-flash`, `reasoning`, `thinking` | vLLM Docker | Deep reasoning, 200K context, tool use |
+| Leanstral 2603 | `leanstral`, `lean4`, `proving` | llama.cpp | Lean 4 theorem proving |
+| Nemotron-3 Super 120B | `nemotron`, `nemotron-3-super`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use |
+| Qwen3.6 35B-A3B | `qwen3.6`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context |
+| Gemma-4 26B-A4B | `gemma-4`, `gemma`, `gemma-4-26b-a4b` | vLLM (NVFP4) | General chat, long context |
+
+Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
 
 ## Prerequisites
 
-- DGX Spark with 128GB unified memory
+- DGX Spark (GB10 / Blackwell SM12.1) with 128GB unified memory
 - llama.cpp built with CUDA support (`~/llama.cpp/build/bin/llama-server`)
 - GGUF model files in `~/models/`
-- Docker installed (for DeepSeek V4)
+- Docker installed (for the vLLM / NVFP4 models)
 - Tailscale Funnel configured (optional, for public access)
 
 ## Installation
@@ -34,29 +38,31 @@ An OpenAI-compatible API router that automatically switches between multiple mod
 git clone <repo> ~/dgx-spark-router
 cd ~/dgx-spark-router
 
-# Copy files to home directory
-cp swap-model.sh launch-deepseek.sh ~/
-chmod +x ~/swap-model.sh ~/launch-deepseek.sh
-cp router.py ~/
+# Copy runtime files to home directory
+cp router.py swap-model.sh vllm-registry.sh launch-vllm.sh ~/
+chmod +x ~/swap-model.sh ~/launch-vllm.sh
 ```
 
-### DeepSeek V4 Setup (one-time)
+`swap-model.sh` sources `vllm-registry.sh` and invokes `launch-vllm.sh` from its own directory, so keep the three together.
+
+### vLLM Model Setup (one-time)
 
 ```bash
-# Download Docker image and model weights (~180B params, MXFP4)
-HF_TOKEN=... bash install-deepseek.sh
+# Install all registry models (pulls NGC images, downloads NVFP4 weights,
+# installs the super_v3 parser where needed)
+bash install-vllm.sh
+
+# ...or just one model key
+bash install-vllm.sh nemotron-3-super
 ```
 
-This will:
-1. Install the vLLM REAP patcher for GB10
-2. Pull the vLLM Docker image (`ghcr.io/0xsero/deepseek-v4-flash-spark-vllm:cutlass451-g27`)
-3. Download the model weights from HuggingFace (`0xSero/DeepSeek-V4-Flash-180B`)
+Registry keys: `nemotron-3-super`, `qwen3.6`, `gemma-4`. Each entry in `vllm-registry.sh` pins its NGC image, NVFP4 repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
 
 ### Start the Router
 
 ```bash
-# Start the backend (auto-selects model on first request)
-LLAMA_PORT=8001 ~/swap-model.sh minimax
+# Optionally pre-warm a backend (the router also does this on demand)
+LLAMA_PORT=8001 ~/swap-model.sh gpt-oss
 
 # Start the router (port 8000)
 python3 ~/router.py
@@ -76,23 +82,24 @@ curl http://localhost:8000/v1/models
 # Chat completion (auto-selects/swaps model)
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "coding", "messages": [{"role": "user", "content": "Hello"}]}'
+  -d '{"model": "gpt-oss", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
 ### Model Selection
 
 ```bash
-# Use MiniMax for code
-curl ... -d '{"model": "coding", ...}'
-
-# Use GPT-OSS for writing
+# GPT-OSS for scientific writing
 curl ... -d '{"model": "scientific", ...}'
 
-# Use GLM-Flash for speed
-curl ... -d '{"model": "fast", ...}'
+# Leanstral for Lean 4 proving
+curl ... -d '{"model": "proving", ...}'
 
-# Use DeepSeek V4 for reasoning (swaps backend to vLLM Docker)
-curl ... -d '{"model": "deepseek", ...}'
+# Nemotron-3 Super for reasoning (swaps backend to vLLM Docker)
+curl ... -d '{"model": "reasoning", ...}'
+
+# Qwen3.6 / Gemma-4 (vLLM Docker)
+curl ... -d '{"model": "qwen3.6", ...}'
+curl ... -d '{"model": "gemma", ...}'
 ```
 
 The router automatically:
@@ -101,16 +108,15 @@ The router automatically:
 3. Starts the requested model with the appropriate backend
 4. Forwards your request once ready
 
-### DeepSeek V4 Flash Details
+### vLLM / NVFP4 Details
 
-DeepSeek V4 runs via vLLM in Docker (not llama.cpp) with:
-- K160 profile: 180B parameter REAP-pruned MoE model
-- FP8 MLA KV cache, 200K context window
-- DeepSeek MTP speculative decoding (2 tokens)
-- CUDA graph compilation for performance
-- Thinking/reasoning mode with `<think>` tags
-- Tool calling support
-- Memory watchdog to prevent OOM
+The NVFP4 models run via vLLM in Docker (not llama.cpp). GB10/Blackwell-specific env defaults are baked into `vllm-registry.sh`:
+
+- `VLLM_NVFP4_GEMM_BACKEND=marlin` — stable NVFP4 GEMM path on GB10
+- `VLLM_FLASHINFER_MOE_BACKEND=latency` — throughput MoE kernels are SM120-only
+- `VLLM_USE_FLASHINFER_MOE_FP4=0` — avoid the unstable FP4 MoE fastpath
+
+`launch-vllm.sh` starts the container, writes the active key to `~/.vllm-current`, and runs a memory watchdog to prevent OOM. Nemotron-3 Super additionally loads the `super_v3` reasoning parser plus the `qwen3_coder` tool-call parser.
 
 ## Architecture
 
@@ -118,46 +124,56 @@ DeepSeek V4 runs via vLLM in Docker (not llama.cpp) with:
 ┌─────────────────┐     ┌─────────────────┐     ┌──────────────────────┐
 │   Your App      │────▶│    router.py    │────▶│  llama-server (GGUF) │
 │                 │     │   (port 8000)   │     │  or                  │
-└─────────────────┘     └────────┬────────┘     │  vLLM Docker (DSv4)  │
+└─────────────────┘     └────────┬────────┘     │  vLLM Docker (NVFP4) │
                                  │              │  (port 8001)         │
                                  ▼              └──────────────────────┘
                         ┌─────────────────┐
                         │ swap-model.sh   │
-                        │ (model control) │
-                        └─────────────────┘
+                        │ (model control) │──── sources vllm-registry.sh
+                        └─────────────────┘──── invokes launch-vllm.sh
 ```
 
 ## Configuration
 
 ### Adding GGUF Models (llama.cpp)
 
-Edit `swap-model.sh` to add new models:
+Edit `swap-model.sh` to add a model path:
 
 ```bash
 declare -A MODELS
-MODELS[minimax]="$HOME/models/MiniMax-M2.1-GGUF/..."
 MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/..."
 MODELS[my-new-model]="$HOME/models/my-model.gguf"
 ```
 
-Then add aliases in `router.py`:
+### Adding vLLM Models (NVFP4)
+
+Add a key to `vllm_keys()` and a case arm in `vllm_config()` inside `vllm-registry.sh`:
+
+```bash
+vllm_keys() { echo "nemotron-3-super qwen3.6 gemma-4 my-model"; }
+
+# in vllm_config():
+my-model)
+    VR_REPO="org/My-Model-NVFP4"
+    VR_SERVED="my-model"
+    VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
+    ;;
+```
+
+Then run `bash install-vllm.sh my-model` to fetch the image and weights.
+
+### Adding Aliases
+
+For either backend, add aliases in `router.py`:
 
 ```python
 MODELS = {
     # ... existing ...
-    "my-new-model": "my-new-model",
-    "my-alias": "my-new-model",
+    "my-model": "my-model",
+    "my-alias": "my-model",
 }
-```
-
-### DeepSeek Configuration
-
-Edit `launch-deepseek.sh` to tune vLLM parameters:
-
-```bash
-CONTEXT_LENGTH=200000      # Max context window
-KV_CACHE_MEMORY_BYTES=6G   # KV cache size
-THINKING=true              # Enable reasoning mode
+VALID_MODELS = {..., "my-model"}
+MODEL_INFO = [..., {"id": "my-model", "object": "model", "canonical": "my-model"}]
 ```
 
 ### Systemd Service
@@ -172,10 +188,13 @@ sudo systemctl enable --now router
 ## Files
 
 - `router.py` — OpenAI-compatible HTTP server with auto-switching
-- `swap-model.sh` — Bash script to start/stop/swap models (both backends)
-- `launch-deepseek.sh` — vLLM Docker launcher for DeepSeek V4 Flash
-- `install-deepseek.sh` — One-time setup: pulls Docker image + downloads model
-- `patch_vllm_reap_gb10.py` — vLLM patches for REAP models on GB10/SM121
+- `swap-model.sh` — Start/stop/swap models across both backends
+- `vllm-registry.sh` — Declarative registry of vLLM/NVFP4 model configs
+- `launch-vllm.sh` — vLLM Docker launcher (image, parsers, memory watchdog)
+- `install-vllm.sh` — One-time setup: pulls images, downloads weights, installs parser
+- `hf-download.sh` — Shared HuggingFace snapshot downloader
+- `super_v3_reasoning_parser.py` — vLLM reasoning parser plugin for Nemotron thinking modes
+- `benchmark.py` — Throughput/latency benchmark helper
 - `router.service` — Systemd unit file for production deployment
 
 ## License

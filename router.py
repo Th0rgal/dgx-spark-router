@@ -8,27 +8,24 @@ BACKEND_PORT = 8001
 ROUTER_PORT = 8000
 
 MODELS = {
-    "minimax": "minimax", "minimax-m2.1": "minimax", "tool-calling": "minimax", "coding": "minimax",
     "gpt-oss": "gpt-oss", "gpt-oss-120b": "gpt-oss", "scientific": "gpt-oss", "writing": "gpt-oss",
-    "glm-flash": "glm-flash", "glm-4.7-flash": "glm-flash", "fast": "glm-flash",
     "leanstral": "leanstral", "leanstral-2603": "leanstral", "lean4": "leanstral", "proving": "leanstral",
-    "kat-dev": "kat-dev", "kat-dev-72b": "kat-dev", "kat-dev-72b-exp": "kat-dev", "kat-coder": "kat-dev",
-    "qwen3.5-397b": "qwen35-397b", "qwen35-397b": "qwen35-397b", "qwen": "qwen35-397b",
-    "qwen-3.5": "qwen35-397b", "qwen3.5": "qwen35-397b", "best-qwen": "qwen35-397b",
-    "deepseek-v4-flash": "deepseek-v4-flash", "deepseek": "deepseek-v4-flash", "deepseek-v4": "deepseek-v4-flash",
-    "deepseek-v4-flash-spark": "deepseek-v4-flash", "reasoning": "deepseek-v4-flash", "thinking": "deepseek-v4-flash",
+    "nemotron-3-super": "nemotron-3-super", "nemotron": "nemotron-3-super", "nemotron-3": "nemotron-3-super",
+    "nemotron-super": "nemotron-3-super", "nemotron-3-super-120b": "nemotron-3-super",
+    "reasoning": "nemotron-3-super", "thinking": "nemotron-3-super",
+    "qwen3.6": "qwen3.6", "qwen3.6-35b": "qwen3.6", "qwen3.6-35b-a3b": "qwen3.6", "qwen3-6": "qwen3.6",
+    "gemma-4": "gemma-4", "gemma4": "gemma-4", "gemma": "gemma-4",
+    "gemma-4-26b": "gemma-4", "gemma-4-26b-a4b": "gemma-4",
 }
 
-VALID_MODELS = {"minimax", "gpt-oss", "glm-flash", "leanstral", "kat-dev", "qwen35-397b", "deepseek-v4-flash"}
+VALID_MODELS = {"gpt-oss", "leanstral", "nemotron-3-super", "qwen3.6", "gemma-4"}
 
 MODEL_INFO = [
-    {"id": "minimax-m2.1", "object": "model", "canonical": "minimax"},
     {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
-    {"id": "glm-4.7-flash", "object": "model", "canonical": "glm-flash"},
     {"id": "leanstral-2603", "object": "model", "canonical": "leanstral"},
-    {"id": "kat-dev-72b-exp", "object": "model", "canonical": "kat-dev"},
-    {"id": "qwen3.5-397b", "object": "model", "canonical": "qwen35-397b"},
-    {"id": "deepseek-v4-flash", "object": "model", "canonical": "deepseek-v4-flash"},
+    {"id": "nemotron-3-super", "object": "model", "canonical": "nemotron-3-super"},
+    {"id": "qwen3.6", "object": "model", "canonical": "qwen3.6"},
+    {"id": "gemma-4", "object": "model", "canonical": "gemma-4"},
 ]
 
 class Router:
@@ -77,7 +74,7 @@ class Router:
                 env = os.environ.copy()
                 env["LLAMA_PORT"] = str(BACKEND_PORT)
                 r = subprocess.run(["bash", os.path.expanduser("~/swap-model.sh"), name],
-                                 capture_output=True, text=True, timeout=900, env=env)
+                                 capture_output=True, text=True, timeout=1800, env=env)
                 d = json.loads(r.stdout.strip().split('\n')[-1])
                 if d.get("status") == "ready":
                     self.current = name
@@ -151,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         if '/chat/completions' in self.path:
             try:
                 data = json.loads(body)
-                requested = data.get('model', 'minimax')
+                requested = data.get('model', 'gpt-oss')
                 ok, err = router.ensure(requested)
                 if not ok:
                     self.send_response(400)
@@ -162,7 +159,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # Rewrite the alias to the backend's served model name. vLLM
                 # validates the model field against --served-model-name and 404s
-                # on anything else, so "deepseek"/"reasoning"/etc. must become
+                # on anything else, so "nemotron"/"reasoning"/etc. must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
                 body = json.dumps(data).encode()
@@ -184,8 +181,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: minimax-m2.1, gpt-oss-120b, glm-4.7-flash, leanstral-2603, kat-dev-72b-exp, qwen3.5-397b, deepseek-v4-flash")
-    print(f"Aliases: tool-calling, coding, scientific, writing, fast, lean4, proving, kat-coder, qwen, reasoning, thinking")
+    print(f"Models: gpt-oss-120b, leanstral-2603, nemotron-3-super, qwen3.6, gemma-4")
+    print(f"Aliases: scientific, writing, lean4, proving, reasoning, thinking, gemma")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
