@@ -5,7 +5,7 @@ Drives the router (which swaps backends on demand), records latency and
 throughput, and saves both raw JSON and a markdown summary. Stdlib only.
 
 Usage:
-  python3 benchmark.py --models nemotron,qwen3.6,gemma-4,minimax,gpt-oss,glm-flash
+  python3 benchmark.py --models nemotron,qwen3.6,gemma-4,gpt-oss
   python3 benchmark.py --models fast --prompts speed
 """
 import argparse, json, time, urllib.request, urllib.error, sys, statistics

@@ -65,6 +65,21 @@ vllm_config() {
             VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
             VR_MAXLEN=65536
             VR_MAXSEQS=4
+            # Gemma-4 is a multimodal NVFP4 MoE; it needs two GB10-specific fixes:
+            #  1) vLLM forces --disable_chunked_mm_input for its bidirectional vision
+            #     attention, which then requires max_num_batched_tokens >= 2496.
+            #  2) The NVFP4 MoE oracle crashes (AVAILABLE_BACKENDS.remove on a backend
+            #     that was never registered) whenever VLLM_USE_FLASHINFER_MOE_FP4 is
+            #     set on this box. Drop the FlashInfer MoE vars and force the stable
+            #     Marlin NVFP4 path; for a modelopt-NVFP4 model FORCE_FP8_MARLIN only
+            #     selects the Marlin MoE kernel (GEMM already uses Marlin).
+            VR_ARGS+=(--max-num-batched-tokens 8192)
+            VR_ENV=(
+                VLLM_NVFP4_GEMM_BACKEND=marlin
+                VLLM_TEST_FORCE_FP8_MARLIN=1
+                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            )
             ;;
         *)
             return 1
