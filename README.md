@@ -13,13 +13,15 @@ An OpenAI-compatible API router that automatically switches between multiple mod
 
 ## Supported Models
 
-| Model | Aliases | Backend | Best For |
-|-------|---------|---------|----------|
-| GPT-OSS 120B | `gpt-oss`, `gpt-oss-120b`, `scientific`, `writing` | llama.cpp | Scientific reasoning, reports |
-| Leanstral 2603 | `leanstral`, `lean4`, `proving` | llama.cpp | Lean 4 theorem proving |
-| Nemotron-3 Super 120B | `nemotron`, `nemotron-3-super`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use |
-| Qwen3.6 35B-A3B | `qwen3.6`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context |
-| Gemma-4 26B-A4B | `gemma-4`, `gemma`, `gemma-4-26b-a4b` | vLLM (NVFP4) | General chat, long context |
+In the `"model"` field of a request, use the **primary name** (what `/v1/models` returns) or any of the accepted aliases. Names are case-insensitive; an unknown name is rejected with `Unknown model: <name>`.
+
+| Display name | Primary `model` name | Other accepted aliases | Backend | Best for |
+|---|---|---|---|---|
+| GPT-OSS 120B | **`gpt-oss-120b`** | `gpt-oss`, `scientific`, `writing` | llama.cpp | Scientific reasoning, reports |
+| Leanstral 2603 | **`leanstral-2603`** | `leanstral`, `lean4`, `proving` | llama.cpp | Lean 4 theorem proving |
+| Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
+| Qwen3.6 35B-A3B | **`qwen3.6`** | `qwen3.6-35b`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context (~64K) |
+| Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
 
 Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
 
