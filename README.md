@@ -22,6 +22,7 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
 | Qwen3.6 35B-A3B | **`qwen3.6`** | `qwen3.6-35b`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context (~64K) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
+| Step 3.7 Flash REAP 148B | **`step3p7-flash-148b`** | `step3.7`, `step37`, `step-3.7-flash`, `step-flash` | vLLM (NVFP4) | StepFun coding/reasoning experiments (~8K context) |
 
 Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
 
@@ -58,7 +59,7 @@ bash install-vllm.sh
 bash install-vllm.sh nemotron-3-super
 ```
 
-Registry keys: `nemotron-3-super`, `qwen3.6`, `gemma-4`. Each entry in `vllm-registry.sh` pins its NGC image, NVFP4 repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
+Registry keys: `nemotron-3-super`, `qwen3.6`, `gemma-4`, `step3p7-flash-148b`. Each entry in `vllm-registry.sh` pins its NGC image, NVFP4 repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
 
 ### Start the Router
 
@@ -102,6 +103,9 @@ curl ... -d '{"model": "reasoning", ...}'
 # Qwen3.6 / Gemma-4 (vLLM Docker)
 curl ... -d '{"model": "qwen3.6", ...}'
 curl ... -d '{"model": "gemma", ...}'
+
+# Step 3.7 Flash REAP 148B (vLLM Docker)
+curl ... -d '{"model": "step37", ...}'
 ```
 
 The router automatically:
@@ -118,7 +122,7 @@ The NVFP4 models run via vLLM in Docker (not llama.cpp). GB10/Blackwell-specific
 - `VLLM_FLASHINFER_MOE_BACKEND=latency` — throughput MoE kernels are SM120-only
 - `VLLM_USE_FLASHINFER_MOE_FP4=0` — avoid the unstable FP4 MoE fastpath
 
-`launch-vllm.sh` starts the container, writes the active key to `~/.vllm-current`, and runs a memory watchdog to prevent OOM. Nemotron-3 Super additionally loads the `super_v3` reasoning parser plus the `qwen3_coder` tool-call parser.
+`launch-vllm.sh` starts the container, writes the active key to `~/.vllm-current`, and runs a memory watchdog to prevent OOM. Nemotron-3 Super additionally loads the `super_v3` reasoning parser plus the `qwen3_coder` tool-call parser. Step 3.7 Flash REAP uses the StepFun vLLM image, ModelOpt NVFP4, FP8 KV cache, the Step 3.5 reasoning/tool parsers, and a conservative 8K context so the 95 GB checkpoint has room to load on one 128 GB DGX Spark.
 
 ## Architecture
 
