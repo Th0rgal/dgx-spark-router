@@ -16,9 +16,12 @@ MODELS = {
     "qwen3.6": "qwen3.6", "qwen3.6-35b": "qwen3.6", "qwen3.6-35b-a3b": "qwen3.6", "qwen3-6": "qwen3.6",
     "gemma-4": "gemma-4", "gemma4": "gemma-4", "gemma": "gemma-4",
     "gemma-4-26b": "gemma-4", "gemma-4-26b-a4b": "gemma-4",
+    "step3p7-flash-148b": "step3p7-flash-148b", "step3.7": "step3p7-flash-148b",
+    "step37": "step3p7-flash-148b", "step-3.7-flash": "step3p7-flash-148b",
+    "step-flash": "step3p7-flash-148b",
 }
 
-VALID_MODELS = {"gpt-oss", "leanstral", "nemotron-3-super", "qwen3.6", "gemma-4"}
+VALID_MODELS = {"gpt-oss", "leanstral", "nemotron-3-super", "qwen3.6", "gemma-4", "step3p7-flash-148b"}
 
 MODEL_INFO = [
     {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
@@ -26,6 +29,7 @@ MODEL_INFO = [
     {"id": "nemotron-3-super", "object": "model", "canonical": "nemotron-3-super"},
     {"id": "qwen3.6", "object": "model", "canonical": "qwen3.6"},
     {"id": "gemma-4", "object": "model", "canonical": "gemma-4"},
+    {"id": "step3p7-flash-148b", "object": "model", "canonical": "step3p7-flash-148b"},
 ]
 
 class Router:
@@ -181,8 +185,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: gpt-oss-120b, leanstral-2603, nemotron-3-super, qwen3.6, gemma-4")
-    print(f"Aliases: scientific, writing, lean4, proving, reasoning, thinking, gemma")
+    print(f"Models: gpt-oss-120b, leanstral-2603, nemotron-3-super, qwen3.6, gemma-4, step3p7-flash-148b")
+    print(f"Aliases: scientific, writing, lean4, proving, reasoning, thinking, gemma, step37, step-flash")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
