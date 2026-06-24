@@ -25,13 +25,41 @@ PARSER_FILE=${PARSER_FILE:-$HOME/super_v3_reasoning_parser.py}
 WATCHDOG_MIN_AVAILABLE_KB=${WATCHDOG_MIN_AVAILABLE_KB:-2097152}
 PRINT_ONLY=${PRINT_ONLY:-0}
 
-# Resolve the locally-cached snapshot directory (revision-agnostic).
-CACHE_DIR="${HF_HOME}/models--${VR_REPO//\//--}"
-MODEL_DIR=$(ls -d "${CACHE_DIR}"/snapshots/*/ 2>/dev/null | head -1 || true)
-if [ -z "${MODEL_DIR}" ] || [ ! -d "${MODEL_DIR}" ]; then
-    echo "Model not found under: ${CACHE_DIR}/snapshots/" >&2
+resolve_model_dir() {
+    local repo="$1"
+    local local_dir="$2"
+    local label="$3"
+
+    if [ -n "$local_dir" ]; then
+        if [ ! -d "$local_dir" ]; then
+            echo "Local $label directory not found: $local_dir" >&2
+            return 1
+        fi
+        printf '%s\n' "$local_dir"
+        return 0
+    fi
+
+    local cache_dir="${HF_HOME}/models--${repo//\//--}"
+    local model_dir
+    model_dir=$(ls -d "${cache_dir}"/snapshots/*/ 2>/dev/null | head -1 || true)
+    if [ -z "$model_dir" ] || [ ! -d "$model_dir" ]; then
+        echo "$label not found under: ${cache_dir}/snapshots/" >&2
+        return 1
+    fi
+    printf '%s\n' "$model_dir"
+}
+
+if ! MODEL_DIR=$(resolve_model_dir "$VR_REPO" "${VR_LOCAL_DIR:-}" "model"); then
     echo "{\"status\":\"error\",\"message\":\"Model $KEY not downloaded. Run install-vllm.sh $KEY first.\"}"
     exit 1
+fi
+
+DRAFT_DIR=""
+if [ -n "${VR_DRAFT_REPO:-}" ] || [ -n "${VR_DRAFT_LOCAL_DIR:-}" ]; then
+    if ! DRAFT_DIR=$(resolve_model_dir "${VR_DRAFT_REPO:-}" "${VR_DRAFT_LOCAL_DIR:-}" "drafter"); then
+        echo "{\"status\":\"error\",\"message\":\"Drafter for $KEY not downloaded. Run install-vllm.sh $KEY first.\"}"
+        exit 1
+    fi
 fi
 
 if ! docker image inspect "$VR_IMAGE" >/dev/null 2>&1; then
@@ -52,6 +80,10 @@ args=(
     --max-num-seqs "$VR_MAXSEQS"
     "${VR_ARGS[@]}"
 )
+
+if [ -n "$DRAFT_DIR" ]; then
+    args+=(--speculative-config "{\"method\":\"dflash\",\"model\":\"$DRAFT_DIR\",\"num_speculative_tokens\":${VR_SPEC_TOKENS:-12}}")
+fi
 
 if [ -n "$VR_TOOL_PARSER" ]; then
     args+=(--enable-auto-tool-choice --tool-call-parser "$VR_TOOL_PARSER")

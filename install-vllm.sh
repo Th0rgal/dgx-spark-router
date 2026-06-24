@@ -16,6 +16,19 @@ PARSER_DEST=${PARSER_DEST:-$HOME/super_v3_reasoning_parser.py}
 
 mkdir -p "${SPARK_ROOT}/models" "${SPARK_ROOT}/logs" "${HF_HOME}"
 
+download_repo_if_needed() {
+    local repo="$1"
+    [ -z "$repo" ] && return 0
+
+    local snapshot_glob="${HF_HOME}/models--${repo//\//--}/snapshots"
+    if [ -d "$snapshot_glob" ] && [ -n "$(ls -A "$snapshot_glob" 2>/dev/null)" ]; then
+        echo "  weights already cached under $snapshot_glob"
+    else
+        echo "  downloading $repo ..."
+        bash "$SCRIPT_DIR/hf-download.sh" "$repo"
+    fi
+}
+
 KEYS=("$@")
 [ ${#KEYS[@]} -eq 0 ] && read -r -a KEYS <<< "$(vllm_keys)"
 
@@ -44,14 +57,11 @@ for KEY in "${KEYS[@]}"; do
         docker pull "$VR_IMAGE"
     fi
 
-    # 3. Model weights (NVFP4) via the shared downloader.
-    SNAPSHOT_GLOB="${HF_HOME}/models--${VR_REPO//\//--}/snapshots"
-    if [ -d "$SNAPSHOT_GLOB" ] && [ -n "$(ls -A "$SNAPSHOT_GLOB" 2>/dev/null)" ]; then
-        echo "  weights already cached under $SNAPSHOT_GLOB"
-    else
-        echo "  downloading $VR_REPO ..."
-        bash "$SCRIPT_DIR/hf-download.sh" "$VR_REPO"
+    # 3. Model weights (and optional speculative drafter) via the shared downloader.
+    if [ -z "${VR_LOCAL_DIR:-}" ]; then
+        download_repo_if_needed "$VR_REPO"
     fi
+    download_repo_if_needed "${VR_DRAFT_REPO:-}"
 done
 
 echo ""
