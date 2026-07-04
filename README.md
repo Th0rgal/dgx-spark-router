@@ -18,7 +18,8 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Display name | Primary `model` name | Other accepted aliases | Backend | Best for |
 |---|---|---|---|---|
 | GPT-OSS 120B | **`gpt-oss-120b`** | `gpt-oss`, `scientific`, `writing` | llama.cpp | Scientific reasoning, reports |
-| Leanstral 2603 | **`leanstral-2603`** | `leanstral`, `lean4`, `proving` | llama.cpp | Lean 4 theorem proving |
+| Leanstral 1.5 119B A6B | **`leanstral-1.5-119b-a6b`** | `leanstral`, `leanstral-1.5`, `lean4`, `proving` | llama.cpp (GGUF NVFP4) | Lean 4 theorem proving |
+| Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
 | Qwen3.6 35B-A3B | **`qwen3.6`** | `qwen3.6-35b`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context (~64K) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
@@ -46,6 +47,28 @@ chmod +x ~/swap-model.sh ~/launch-vllm.sh
 ```
 
 `swap-model.sh` sources `vllm-registry.sh` and invokes `launch-vllm.sh` from its own directory, so keep the three together.
+
+
+### Leanstral 1.5 model setup
+
+Leanstral 1.5 is served through the router as `leanstral-1.5-119b-a6b`
+(canonical key `leanstral-1.5`; aliases `leanstral`, `lean4`, `proving`).
+The runtime file is the GB10-tested GGUF NVFP4 quantization of
+[`mistralai/Leanstral-1.5-119B-A6B`](https://huggingface.co/mistralai/Leanstral-1.5-119B-A6B):
+
+```bash
+hf download Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4 \
+  Leanstral-1.5-119B-A6B-NVFP4.gguf \
+  --local-dir ~/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4
+```
+
+Then request it through the router:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"leanstral","messages":[{"role":"user","content":"Say READY in Lean style."}],"max_tokens":32}'
+```
 
 ### vLLM Model Setup (one-time)
 
@@ -144,6 +167,7 @@ Edit `swap-model.sh` to add a model path:
 ```bash
 declare -A MODELS
 MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/..."
+MODELS[leanstral-1.5]="$HOME/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 MODELS[my-new-model]="$HOME/models/my-model.gguf"
 ```
 

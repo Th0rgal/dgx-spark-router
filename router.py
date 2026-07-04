@@ -9,7 +9,9 @@ ROUTER_PORT = 8000
 
 MODELS = {
     "gpt-oss": "gpt-oss", "gpt-oss-120b": "gpt-oss", "scientific": "gpt-oss", "writing": "gpt-oss",
-    "leanstral": "leanstral", "leanstral-2603": "leanstral", "lean4": "leanstral", "proving": "leanstral",
+    "leanstral": "leanstral-1.5", "leanstral-1.5": "leanstral-1.5", "leanstral-15": "leanstral-1.5",
+    "leanstral-1-5": "leanstral-1.5", "leanstral-1.5-119b": "leanstral-1.5", "leanstral-119b": "leanstral-1.5",
+    "leanstral-2603": "leanstral", "lean4": "leanstral-1.5", "proving": "leanstral-1.5",
     "nemotron-3-super": "nemotron-3-super", "nemotron": "nemotron-3-super", "nemotron-3": "nemotron-3-super",
     "nemotron-super": "nemotron-3-super", "nemotron-3-super-120b": "nemotron-3-super",
     "reasoning": "nemotron-3-super", "thinking": "nemotron-3-super",
@@ -27,10 +29,11 @@ MODELS = {
     "aeon": "qwen3.6-aeon-dflash",
 }
 
-VALID_MODELS = {"gpt-oss", "leanstral", "nemotron-3-super", "qwen3.6", "qwen3.6-27b", "gemma-4", "gemma-heretic-smoke", "step3p7-flash-148b", "qwen3.6-aeon-dflash"}
+VALID_MODELS = {"gpt-oss", "leanstral", "leanstral-1.5", "nemotron-3-super", "qwen3.6", "qwen3.6-27b", "gemma-4", "gemma-heretic-smoke", "step3p7-flash-148b", "qwen3.6-aeon-dflash"}
 
 MODEL_INFO = [
     {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
+    {"id": "leanstral-1.5-119b-a6b", "object": "model", "canonical": "leanstral-1.5"},
     {"id": "leanstral-2603", "object": "model", "canonical": "leanstral"},
     {"id": "nemotron-3-super", "object": "model", "canonical": "nemotron-3-super"},
     {"id": "qwen3.6", "object": "model", "canonical": "qwen3.6"},
@@ -194,8 +197,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: gpt-oss-120b, leanstral-2603, nemotron-3-super, qwen3.6, qwen3.6-27b, gemma-4, gemma-heretic-smoke, step3p7-flash-148b, qwen3.6-aeon-dflash")
-    print(f"Aliases: scientific, writing, lean4, proving, reasoning, thinking, qwen3.6-27b-hf, gemma, gemma-heretic, step37, step-flash, aeon, aeon-dflash")
+    print(f"Models: gpt-oss-120b, leanstral-1.5-119b-a6b, leanstral-2603, nemotron-3-super, qwen3.6, qwen3.6-27b, gemma-4, gemma-heretic-smoke, step3p7-flash-148b, qwen3.6-aeon-dflash")
+    print(f"Aliases: scientific, writing, leanstral, lean4, proving, reasoning, thinking, qwen3.6-27b-hf, gemma, gemma-heretic, step37, step-flash, aeon, aeon-dflash")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")

@@ -17,6 +17,7 @@ READY_ATTEMPTS=120
 declare -A MODELS
 MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
 MODELS[leanstral]="$HOME/models/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
+MODELS[leanstral-1.5]="$HOME/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 
 is_vllm_model() {
     local m="$1"
@@ -93,6 +94,11 @@ start_llama_model() {
         leanstral)
             EXTRA_FLAGS+=(-fa on -fit on -c 65536)
             EXTRA_FLAGS+=(--chat-template-file "$HOME/models/Leanstral-2603-GGUF/chat_template.jinja")
+            ;;
+        leanstral-1.5)
+            # Leanstral 1.5 119B A6B, GB10-tested GGUF NVFP4 quantization of mistralai/Leanstral-1.5-119B-A6B.
+            EXTRA_FLAGS+=(-fa on -fit on -c 32768)
+            EXTRA_FLAGS+=(--alias leanstral-1.5)
             ;;
         *)
             EXTRA_FLAGS+=(-c 4096)
