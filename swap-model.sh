@@ -46,7 +46,11 @@ get_status() {
         local cmd model="unknown"
         cmd=$(ps -p "$llama_pid" -o args= 2>/dev/null || true)
         [[ "$cmd" == *"gpt-oss"* ]] && model="gpt-oss"
-        [[ "$cmd" == *"Leanstral"* ]] && model="leanstral"
+        if [[ "$cmd" == *"Leanstral-1.5"* ]] || [[ "$cmd" == *"leanstral-1.5"* ]]; then
+            model="leanstral-1.5"
+        elif [[ "$cmd" == *"Leanstral"* ]]; then
+            model="leanstral"
+        fi
         echo "{\"status\":\"running\",\"model\":\"$model\",\"backend\":\"llama.cpp\",\"pid\":$llama_pid}"
     else
         echo '{"status":"stopped","model":null}'
