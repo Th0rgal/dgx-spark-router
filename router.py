@@ -10,7 +10,8 @@ ROUTER_PORT = 8000
 MODELS = {
     "gpt-oss": "gpt-oss", "gpt-oss-120b": "gpt-oss", "scientific": "gpt-oss", "writing": "gpt-oss",
     "leanstral": "leanstral-1.5", "leanstral-1.5": "leanstral-1.5", "leanstral-15": "leanstral-1.5",
-    "leanstral-1-5": "leanstral-1.5", "leanstral-1.5-119b": "leanstral-1.5", "leanstral-119b": "leanstral-1.5",
+    "leanstral-1-5": "leanstral-1.5", "leanstral-1.5-119b": "leanstral-1.5",
+    "leanstral-1.5-119b-a6b": "leanstral-1.5", "leanstral-119b": "leanstral-1.5",
     "leanstral-2603": "leanstral", "lean4": "leanstral-1.5", "proving": "leanstral-1.5",
     "nemotron-3-super": "nemotron-3-super", "nemotron": "nemotron-3-super", "nemotron-3": "nemotron-3-super",
     "nemotron-super": "nemotron-3-super", "nemotron-3-super-120b": "nemotron-3-super",
