@@ -101,7 +101,9 @@ start_llama_model() {
             ;;
         leanstral-1.5)
             # Leanstral 1.5 119B A6B, GB10-tested GGUF NVFP4 quantization of mistralai/Leanstral-1.5-119B-A6B.
-            EXTRA_FLAGS+=(-fa on -fit on -c 32768)
+            # Benchmark/tool-call transcripts can exceed 32k context; use one slot to maximize per-request context.
+            # Override with LEANSTRAL15_CTX / LEANSTRAL15_PARALLEL for probes.
+            EXTRA_FLAGS+=(-fa on -fit on -c "${LEANSTRAL15_CTX:-131072}" -np "${LEANSTRAL15_PARALLEL:-1}")
             EXTRA_FLAGS+=(--alias leanstral-1.5)
             ;;
         *)
