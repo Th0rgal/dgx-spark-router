@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """Multi-Model OpenAI-Compatible Router for DGX Spark"""
 import os, json, subprocess, time, threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request, urllib.error
 
 BACKEND_PORT = 8001
 ROUTER_PORT = 8000
+
+CHATML_STOP_SEQUENCES = (
+    "<|im_end|>",
+    "<|im_start|>",
+    "</|im_end|>",
+    "</|im_start|>",
+)
 
 MODELS = {
     "gpt-oss": "gpt-oss", "gpt-oss-120b": "gpt-oss", "scientific": "gpt-oss", "writing": "gpt-oss",
@@ -49,6 +56,10 @@ class Router:
     def __init__(self):
         self.current = None
         self.lock = threading.Lock()
+        # Keep model selection and the corresponding inference atomic. The
+        # HTTP server is threaded so health/catalog requests stay responsive,
+        # but a second chat must not swap the backend during an active request.
+        self.chat_lock = threading.Lock()
         self._detect()
 
     def _detect(self):
@@ -109,7 +120,10 @@ class Router:
         req.add_header('Content-Type', 'application/json')
         try:
             with urllib.request.urlopen(req, timeout=600) as r:
-                return r.status, dict(r.headers), r.read()
+                response = r.read()
+                if '/chat/completions' in path:
+                    response = strip_chatml_sentinels(response)
+                return r.status, dict(r.headers), response
         except urllib.error.HTTPError as e:
             return e.code, {}, e.read()
         except urllib.error.URLError as e:
@@ -121,6 +135,19 @@ class Router:
             return 500, {}, json.dumps({"error": str(e)}).encode()
 
 router = Router()
+
+def add_chatml_stops(data):
+    existing = data.get("stop", [])
+    if isinstance(existing, str):
+        existing = [existing]
+    elif not isinstance(existing, list):
+        existing = []
+    data["stop"] = existing + [stop for stop in CHATML_STOP_SEQUENCES if stop not in existing]
+
+def strip_chatml_sentinels(body):
+    for sentinel in CHATML_STOP_SEQUENCES:
+        body = body.replace(sentinel.encode(), b"")
+    return body
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, f, *a): print(f"[{time.strftime('%H:%M:%S')}] {f % a}")
@@ -166,6 +193,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(body)
                 requested = data.get('model', 'gpt-oss')
+            except json.JSONDecodeError as e:
+                self.send_response(400)
+                self._cors()
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": {"message": str(e)}}).encode())
+                return
+            with router.chat_lock:
                 ok, err = router.ensure(requested)
                 if not ok:
                     self.send_response(400)
@@ -179,15 +213,12 @@ class Handler(BaseHTTPRequestHandler):
                 # on anything else, so "nemotron"/"reasoning"/etc. must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
+                if data['model'] in ('leanstral', 'leanstral-1.5'):
+                    add_chatml_stops(data)
                 body = json.dumps(data).encode()
-            except json.JSONDecodeError as e:
-                self.send_response(400)
-                self._cors()
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": {"message": str(e)}}).encode())
-                return
-
-        s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
+                s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
+        else:
+            s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
         self.send_response(s)
         self._cors()
         self.send_header('Content-Type', h.get('Content-Type', 'application/json'))
@@ -204,4 +235,4 @@ if __name__ == "__main__":
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
     print("=" * 50)
-    HTTPServer(('0.0.0.0', ROUTER_PORT), Handler).serve_forever()
+    ThreadingHTTPServer(('0.0.0.0', ROUTER_PORT), Handler).serve_forever()
