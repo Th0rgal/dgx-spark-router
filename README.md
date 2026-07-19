@@ -62,6 +62,11 @@ hf download Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4 \
   --local-dir ~/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4
 ```
 
+The quantized GGUF does not embed `tokenizer.chat_template`. The router therefore ships and
+loads Mistral's official `chat_template.jinja`; without it, llama.cpp falls back to an incompatible
+ChatML-style prompt and returns textual pseudo-calls instead of structured `message.tool_calls`.
+Deploy the `chat-templates/` directory alongside `swap-model.sh`.
+
 Then request it through the router:
 
 ```bash

@@ -213,7 +213,9 @@ class Handler(BaseHTTPRequestHandler):
                 # on anything else, so "nemotron"/"reasoning"/etc. must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
-                if data['model'] in ('leanstral', 'leanstral-1.5'):
+                # Only the legacy Leanstral-2603 backend uses ChatML sentinels. Leanstral 1.5 uses
+                # Mistral's official [TOOL_CALLS]/[ARGS] template and llama.cpp response parser.
+                if data['model'] == 'leanstral':
                     add_chatml_stops(data)
                 body = json.dumps(data).encode()
                 s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
