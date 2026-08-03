@@ -9,6 +9,7 @@ An OpenAI-compatible API router that automatically switches between multiple mod
 - **Dual backend** — llama.cpp for GGUF models, vLLM Docker for NVFP4 models
 - **Model registry** — vLLM models are defined declaratively in `vllm-registry.sh`
 - **Model aliases** — Use semantic names like `scientific`, `proving`, `reasoning`
+- **Responsive catalog** — Health and model discovery remain available during long generations
 - **Zero dependencies** — Router is pure Python stdlib, no pip packages required
 
 ## Supported Models
@@ -108,6 +109,17 @@ curl http://localhost:8000/v1/models
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model": "gpt-oss", "messages": [{"role": "user", "content": "Hello"}]}'
+```
+
+The router's local and Tailscale endpoints do not require authentication. If it
+is accessed through an authenticated OpenAI-compatible proxy, such as
+Sandboxed.sh, that proxy still requires its own bearer key for both
+`/v1/models` and `/v1/chat/completions`.
+
+Run the router regression tests with:
+
+```bash
+python3 -m unittest -v
 ```
 
 ### Model Selection
