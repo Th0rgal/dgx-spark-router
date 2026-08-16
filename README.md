@@ -22,7 +22,7 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
 
-| Qwen3.8 27B | **`qwen3.8-nvfp4`** | `qwen3.8`, `qwen3.8-27b`, full HF repo ID | vLLM (NVFP4, FP8 KV) | General reasoning and tool use (~64K context) |
+| Qwen3.8 27B OrcaRouter Uncensored | **`qwen3.8-orca-q4`** | `qwen3.8-orca`, `qwen3.8-27b-uncensored`, full GGUF repo ID | llama.cpp (Q4_K_M) | Uncensored reasoning and tool use (~64K context) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
 
 Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
@@ -89,18 +89,18 @@ bash install-vllm.sh
 bash install-vllm.sh nemotron-3-super
 ```
 
-Registry keys include `nemotron-3-super`, `qwen3.8-nvfp4`, and `gemma-4`. Each entry in `vllm-registry.sh` defines its image, exact Hugging Face repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
+Registry keys include `nemotron-3-super` and `gemma-4`. Each entry in `vllm-registry.sh` defines its image, exact Hugging Face repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
 
-Install and request the NVFP4 fallback with:
+Install and request the OrcaRouter-derived 4-bit fallback with:
 
 ```bash
-bash install-vllm.sh qwen3.8-nvfp4
+hf download chimingw/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF Qwen3.8-27B-Uncensored-OrcaRouter-Q4_K_M.gguf --local-dir ~/models/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF
 curl http://localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.8-nvfp4","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
+  -d '{"model":"qwen3.8-orca-q4","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
 ```
 
-Runtime weights: [`Inferact/Qwen3.8-27B-NVFP4`](https://huggingface.co/Inferact/Qwen3.8-27B-NVFP4), NVFP4, approximately 26.4 GB. The route uses FP8 KV, a 64K context cap, two sequences, and a 70% unified-memory budget for prompt headroom. OrcaRouter block-FP8 was attempted first but its vLLM engine exited while loading shard 3/7; OrcaRouter's GGUF fallback then required separate gated-repository approval.
+Runtime weights: [`chimingw/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF`](https://huggingface.co/chimingw/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF), an ungated Q4_K_M conversion whose declared base is the exact OrcaRouter FP8 checkpoint, approximately 16.5 GB. One 64K llama.cpp slot leaves substantial unified-memory headroom for prompt KV. The original block-FP8 and an NVFP4 fallback both exited in vLLM while loading shard 3/7 on this GB10 runtime.
 
 ### Start the Router
 
@@ -141,8 +141,8 @@ curl ... -d '{"model": "proving", ...}'
 # Nemotron-3 Super for reasoning (swaps backend to vLLM Docker)
 curl ... -d '{"model": "reasoning", ...}'
 
-# Qwen3.8 / Gemma-4 (vLLM Docker)
-curl ... -d '{"model": "qwen3.8-nvfp4", ...}'
+# Qwen3.8 OrcaRouter (llama.cpp) / Gemma-4 (vLLM Docker)
+curl ... -d '{"model": "qwen3.8-orca-q4", ...}'
 curl ... -d '{"model": "gemma", ...}'
 ```
 
