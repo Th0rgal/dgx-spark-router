@@ -128,6 +128,15 @@ class Router:
         except Exception as e:
             return 500, {}, json.dumps({"error": str(e)}).encode()
 
+    def open_stream(self, path, method, headers, body):
+        """Open an upstream response without buffering its SSE body."""
+        req = urllib.request.Request(f"http://localhost:{BACKEND_PORT}{path}", data=body, method=method)
+        for k, v in headers.items():
+            if k.lower() not in ('host', 'content-length', 'connection'):
+                req.add_header(k, v)
+        req.add_header('Content-Type', 'application/json')
+        return urllib.request.urlopen(req, timeout=1800)
+
 router = Router()
 
 def add_chatml_stops(data):
@@ -212,6 +221,27 @@ class Handler(BaseHTTPRequestHandler):
                 if data['model'] == 'leanstral':
                     add_chatml_stops(data)
                 body = json.dumps(data).encode()
+                if data.get('stream'):
+                    try:
+                        with router.open_stream(self.path, 'POST', dict(self.headers), body) as upstream:
+                            self.send_response(upstream.status)
+                            self._cors()
+                            self.send_header('Content-Type', upstream.headers.get('Content-Type', 'text/event-stream'))
+                            self.send_header('Cache-Control', 'no-cache')
+                            self.end_headers()
+                            read_chunk = getattr(upstream, 'read1', upstream.read)
+                            while chunk := read_chunk(8192):
+                                self.wfile.write(chunk)
+                                self.wfile.flush()
+                        return
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    except urllib.error.HTTPError as e:
+                        self.send_response(e.code)
+                        self._cors()
+                        self.end_headers()
+                        self.wfile.write(e.read())
+                        return
                 s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
         else:
             s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
