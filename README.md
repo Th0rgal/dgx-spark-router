@@ -93,7 +93,7 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"qwen3.8-aeon-bf16","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
 ```
 
-Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. It is intentionally a distinct route from the quantized `qwen3.6-aeon-dflash` model.
+Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. It is intentionally a distinct route from the quantized `qwen3.6-aeon-dflash` model. The route pins the public AEON vLLM image tag `2026-07-27-v0.26.0` rather than the mutable `latest` tag.
 
 ### Start the Router
 

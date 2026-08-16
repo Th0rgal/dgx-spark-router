@@ -86,7 +86,9 @@ vllm_config() {
         qwen3.8-aeon-bf16)
             VR_REPO="AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16"
             VR_SERVED="qwen3.8-aeon-bf16"
-            VR_IMAGE="ghcr.io/aeon-7/aeon-vllm-ultimate:latest"
+            # Pin the public multi-arch image: GHCR's mutable latest tag can
+            # return an anonymous-pull denial while this release tag is public.
+            VR_IMAGE="ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-27-v0.26.0"
             VR_MAXLEN=65536
             VR_KV_DTYPE="auto"
             VR_MAXSEQS=4
