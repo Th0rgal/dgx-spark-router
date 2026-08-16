@@ -60,10 +60,13 @@ vllm_config() {
             # Official vLLM 0.26 includes Qwen3.5-family support and publishes
             # an arm64/CUDA image suitable for the GB10. Keep this immutable.
             VR_IMAGE="vllm/vllm-openai:v0.26.0-ubuntu2404"
-            VR_MAXLEN=65536
+            # BF16 weights consume 51.75 GiB. On unified GB10 memory, reserving
+            # 90% for vLLM starves the shard loader; 65% leaves safe host/load
+            # headroom while retaining a useful 32K context cache.
+            VR_MAXLEN=32768
             VR_KV_DTYPE="auto"
-            VR_MAXSEQS=4
-            VR_GPU_UTIL="0.90"
+            VR_MAXSEQS=2
+            VR_GPU_UTIL="0.65"
             VR_REASONING_PARSER="qwen3"
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(
