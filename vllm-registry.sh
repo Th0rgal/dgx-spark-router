@@ -70,6 +70,7 @@ vllm_config() {
             VR_REASONING_PARSER="qwen3"
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(
+                --safetensors-load-strategy prefetch
                 --mamba-cache-dtype float16
                 --limit-mm-per-prompt '{"image":4,"video":2}'
                 --max-num-batched-tokens 16384
