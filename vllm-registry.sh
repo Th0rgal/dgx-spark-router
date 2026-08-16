@@ -79,6 +79,7 @@ vllm_config() {
             )
             VR_ENV=(
                 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+                VLLM_ENABLE_V1_MULTIPROCESSING=0
                 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
             )
             ;;
