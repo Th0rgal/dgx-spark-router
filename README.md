@@ -22,7 +22,7 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
 
-| Qwen3.8 27B AEON Ultimate | **`qwen3.8-aeon-bf16`** | `qwen3.8-aeon`, `qwen3.8-27b-aeon`, `aeon-ultimate`, full HF repo ID | vLLM (BF16) | Uncensored multimodal reasoning and tool use (~64K context) |
+| Qwen3.8 27B AEON Ultimate | **`qwen3.8-aeon-bf16`** | `qwen3.8-aeon`, `qwen3.8-27b-aeon`, `aeon-ultimate`, full HF repo ID | vLLM (BF16) | Uncensored multimodal reasoning and tool use (~32K context) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
 
 Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
