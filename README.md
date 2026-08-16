@@ -100,7 +100,7 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"qwen3.8-orca-fp8","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
 ```
 
-Base/runtime weights: [`orcarouter/Qwen3.8-27B-Uncensored-FP8`](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-FP8), block-FP8, approximately 30.9 GB. The route uses FP8 KV cache, a 64K context cap, and a 70% unified-memory budget to retain prompt headroom on GB10.
+Base/runtime weights: [`orcarouter/Qwen3.8-27B-Uncensored-FP8`](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-FP8), block-FP8, approximately 30.9 GB. The route serves the language model only, uses FP8 KV cache, a 64K context cap, and a 70% unified-memory budget to retain prompt headroom on GB10.
 
 ### Start the Router
 

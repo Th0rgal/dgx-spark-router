@@ -68,6 +68,7 @@ vllm_config() {
             VR_REASONING_PARSER="qwen3"
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(
+                --language-model-only
                 --mamba-cache-dtype float16
                 --limit-mm-per-prompt '{"image":4,"video":2}'
                 --max-num-batched-tokens 8192
@@ -76,7 +77,7 @@ vllm_config() {
             )
             VR_ENV=(
                 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-
+                VLLM_ENABLE_V1_MULTIPROCESSING=0
                 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
             )
             ;;
