@@ -21,7 +21,7 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Leanstral 1.5 119B A6B | **`leanstral-1.5-119b-a6b`** | `leanstral`, `leanstral-1.5`, `lean4`, `proving` | llama.cpp (GGUF NVFP4) | Lean 4 theorem proving |
 | Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
-| Qwen3.6 35B-A3B | **`qwen3.6`** | `qwen3.6-35b`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context (~64K) |
+
 | Qwen3.8 27B AEON Ultimate | **`qwen3.8-aeon-bf16`** | `qwen3.8-aeon`, `qwen3.8-27b-aeon`, `aeon-ultimate`, full HF repo ID | vLLM (BF16) | Uncensored multimodal reasoning and tool use (~64K context) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
 
@@ -93,7 +93,7 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"qwen3.8-aeon-bf16","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
 ```
 
-Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. It is intentionally a distinct route from the quantized `qwen3.6-aeon-dflash` model. The route pins the official multi-arch vLLM image `v0.26.0-ubuntu2404`, which includes the Qwen3.5-family architecture used by this checkpoint.
+Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. The route pins the official multi-arch vLLM image `v0.26.0-ubuntu2404`, which includes the Qwen3.5-family architecture used by this checkpoint.
 
 ### Start the Router
 
@@ -134,8 +134,7 @@ curl ... -d '{"model": "proving", ...}'
 # Nemotron-3 Super for reasoning (swaps backend to vLLM Docker)
 curl ... -d '{"model": "reasoning", ...}'
 
-# Qwen3.6 / Gemma-4 (vLLM Docker)
-curl ... -d '{"model": "qwen3.6", ...}'
+# Qwen3.8 AEON / Gemma-4 (vLLM Docker)
 curl ... -d '{"model": "qwen3.8-aeon-bf16", ...}'
 curl ... -d '{"model": "gemma", ...}'
 ```
