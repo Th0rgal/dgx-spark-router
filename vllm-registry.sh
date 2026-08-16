@@ -57,9 +57,9 @@ vllm_config() {
         qwen3.8-aeon-bf16)
             VR_REPO="AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16"
             VR_SERVED="qwen3.8-aeon-bf16"
-            # Official vLLM 0.26 includes Qwen3.5-family support and publishes
-            # an arm64/CUDA image suitable for the GB10. Keep this immutable.
-            VR_IMAGE="vllm/vllm-openai:v0.26.0-ubuntu2404"
+            # AEON's GB10 image is the model author's validated runtime. Pin
+            # the immutable public release rather than the mutable latest tag.
+            VR_IMAGE="ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-27-v0.26.0"
             # BF16 weights consume 51.75 GiB. On unified GB10 memory, reserving
             # 90% for vLLM starves the shard loader; 65% leaves safe host/load
             # headroom while retaining a useful 32K context cache.
@@ -70,7 +70,6 @@ vllm_config() {
             VR_REASONING_PARSER="qwen3"
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(
-                --safetensors-load-strategy prefetch
                 --mamba-cache-dtype float16
                 --limit-mm-per-prompt '{"image":4,"video":2}'
                 --max-num-batched-tokens 16384
@@ -79,7 +78,7 @@ vllm_config() {
             )
             VR_ENV=(
                 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-                VLLM_ENABLE_V1_MULTIPROCESSING=0
+
                 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
             )
             ;;
