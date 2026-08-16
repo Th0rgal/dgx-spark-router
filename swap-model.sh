@@ -18,7 +18,7 @@ declare -A MODELS
 MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
 MODELS[leanstral]="$HOME/models/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
 MODELS[leanstral-1.5]="$HOME/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
-MODELS[qwen3.8-orca-q4]="$HOME/models/Qwen3.8-27B-Uncensored-GGUF/Qwen3.8-27B-Uncensored-Q4_K_M.gguf"
+
 
 is_vllm_model() {
     local m="$1"
@@ -51,8 +51,7 @@ get_status() {
             model="leanstral-1.5"
         elif [[ "$cmd" == *"Leanstral"* ]]; then
             model="leanstral"
-        elif [[ "$cmd" == *"Qwen3.8-27B-Uncensored"* ]]; then
-            model="qwen3.8-orca-q4"
+
         fi
         echo "{\"status\":\"running\",\"model\":\"$model\",\"backend\":\"llama.cpp\",\"pid\":$llama_pid}"
     else
@@ -116,12 +115,7 @@ start_llama_model() {
             EXTRA_FLAGS+=(--alias leanstral-1.5)
             EXTRA_FLAGS+=(--chat-template-file "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja")
             ;;
-        qwen3.8-orca-q4)
-            # The OrcaRouter Q4_K_M conversion is the reliable 4-bit fallback
-            # for GB10. One slot gives the request the full 64K prompt budget.
-            EXTRA_FLAGS+=(-fa on -fit on -c "${QWEN38_CTX:-65536}" -np 1)
-            EXTRA_FLAGS+=(--alias qwen3.8-orca-q4)
-            ;;
+
         *)
             EXTRA_FLAGS+=(-c 4096)
             ;;
