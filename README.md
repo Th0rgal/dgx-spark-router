@@ -22,6 +22,7 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
 | Qwen3.6 35B-A3B | **`qwen3.6`** | `qwen3.6-35b`, `qwen3.6-35b-a3b`, `qwen3-6` | vLLM (NVFP4) | General reasoning, long context (~64K) |
+| Qwen3.8 27B AEON Ultimate | **`qwen3.8-aeon-bf16`** | `qwen3.8-aeon`, `qwen3.8-27b-aeon`, `aeon-ultimate`, full HF repo ID | vLLM (BF16) | Uncensored multimodal reasoning and tool use (~64K context) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
 
 Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
@@ -81,7 +82,18 @@ bash install-vllm.sh
 bash install-vllm.sh nemotron-3-super
 ```
 
-Registry keys: `nemotron-3-super`, `qwen3.6`, `gemma-4`. Each entry in `vllm-registry.sh` pins its NGC image, NVFP4 repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
+Registry keys include `nemotron-3-super`, `qwen3.6`, `qwen3.8-aeon-bf16`, and `gemma-4`. Each entry in `vllm-registry.sh` defines its image, exact Hugging Face repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
+
+Install and request the AEON BF16 model with:
+
+```bash
+bash install-vllm.sh qwen3.8-aeon-bf16
+curl http://localhost:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-aeon-bf16","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
+```
+
+Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. It is intentionally a distinct route from the quantized `qwen3.6-aeon-dflash` model.
 
 ### Start the Router
 
@@ -124,6 +136,7 @@ curl ... -d '{"model": "reasoning", ...}'
 
 # Qwen3.6 / Gemma-4 (vLLM Docker)
 curl ... -d '{"model": "qwen3.6", ...}'
+curl ... -d '{"model": "qwen3.8-aeon-bf16", ...}'
 curl ... -d '{"model": "gemma", ...}'
 ```
 

@@ -15,7 +15,7 @@
 # To add a model: add its key to vllm_keys() and a case arm in vllm_config().
 
 vllm_keys() {
-    echo "nemotron-3-super qwen3.6 qwen3.6-27b gemma-4 gemma-heretic-smoke step3p7-flash-148b qwen3.6-aeon-dflash"
+    echo "nemotron-3-super qwen3.6 qwen3.6-27b qwen3.8-aeon-bf16 gemma-4 gemma-heretic-smoke step3p7-flash-148b qwen3.6-aeon-dflash"
 }
 
 # Populate VR_* globals for the given model key. Returns nonzero for unknown keys.
@@ -74,6 +74,28 @@ vllm_config() {
             VR_REASONING_PARSER="qwen3"
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(
+                --max-num-batched-tokens 16384
+                --enable-chunked-prefill
+                --enable-prefix-caching
+            )
+            VR_ENV=(
+                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            )
+            ;;
+        qwen3.8-aeon-bf16)
+            VR_REPO="AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16"
+            VR_SERVED="qwen3.8-aeon-bf16"
+            VR_IMAGE="ghcr.io/aeon-7/aeon-vllm-ultimate:latest"
+            VR_MAXLEN=65536
+            VR_KV_DTYPE="auto"
+            VR_MAXSEQS=4
+            VR_GPU_UTIL="0.90"
+            VR_REASONING_PARSER="qwen3"
+            VR_TOOL_PARSER="qwen3_coder"
+            VR_ARGS+=(
+                --mamba-cache-dtype float16
+                --limit-mm-per-prompt '{"image":4,"video":2}'
                 --max-num-batched-tokens 16384
                 --enable-chunked-prefill
                 --enable-prefix-caching
