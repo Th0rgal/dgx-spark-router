@@ -100,7 +100,7 @@ curl http://localhost:8000/v1/chat/completions \
   -d '{"model":"qwen3.8-aeon-bf16","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
 ```
 
-Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. The route pins the official multi-arch vLLM image `v0.26.0-ubuntu2404`, which includes the Qwen3.5-family architecture used by this checkpoint.
+Base/runtime weights: [`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16`](https://huggingface.co/AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-BF16), BF16, approximately 55.6 GB. The route pins AEON's GB10-validated vLLM image `2026-07-27-v0.26.0`.
 
 ### Start the Router
 
