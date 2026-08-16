@@ -23,7 +23,7 @@ mkdir -p "$HF_HOME"
 for REPO in "$@"; do
     echo "=== Downloading ${REPO} -> ${HF_HOME} ==="
     HF_HOME="$HF_HOME" \
-    HF_HUB_ENABLE_HF_TRANSFER=1 HF_XET_HIGH_PERFORMANCE=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1 HF_XET_HIGH_PERFORMANCE="${HF_XET_HIGH_PERFORMANCE:-1}" \
     HF_TOKEN="${HF_TOKEN:-$TOKEN}" \
         "${VENV}/bin/python" - "$REPO" <<'PY'
 import os, sys
