@@ -15,7 +15,7 @@
 # To add a model: add its key to vllm_keys() and a case arm in vllm_config().
 
 vllm_keys() {
-    echo "nemotron-3-super qwen3.8-orca-fp8 gemma-4"
+    echo "nemotron-3-super gemma-4"
 }
 
 # Populate VR_* globals for the given model key. Returns nonzero for unknown keys.
@@ -54,33 +54,7 @@ vllm_config() {
             VR_TOOL_PARSER="qwen3_coder"
             ;;
 
-        qwen3.8-orca-fp8)
-            VR_REPO="orcarouter/Qwen3.8-27B-Uncensored-FP8"
-            VR_SERVED="qwen3.8-orca-fp8"
-            VR_IMAGE="ghcr.io/aeon-7/aeon-vllm-ultimate:2026-07-27-v0.26.0"
-            # ~31 GB block-FP8 weights leave ample unified-memory headroom.
-            # Cap vLLM at 70% and use FP8 KV so a real 64K prompt fits without
-            # reproducing the BF16 loader's host-wedging transient.
-            VR_MAXLEN=65536
-            VR_KV_DTYPE="fp8"
-            VR_MAXSEQS=2
-            VR_GPU_UTIL="0.70"
-            VR_REASONING_PARSER="qwen3"
-            VR_TOOL_PARSER="qwen3_coder"
-            VR_ARGS+=(
-                --language-model-only
-                --mamba-cache-dtype float16
-                --limit-mm-per-prompt '{"image":4,"video":2}'
-                --max-num-batched-tokens 8192
-                --enable-chunked-prefill
-                --enable-prefix-caching
-            )
-            VR_ENV=(
-                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-                VLLM_ENABLE_V1_MULTIPROCESSING=0
-                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-            )
-            ;;
+
         gemma-4)
             VR_REPO="nvidia/Gemma-4-26B-A4B-NVFP4"
             VR_SERVED="gemma-4"
