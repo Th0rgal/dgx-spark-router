@@ -20,13 +20,11 @@ download_repo_if_needed() {
     local repo="$1"
     [ -z "$repo" ] && return 0
 
-    local snapshot_glob="${HF_HOME}/models--${repo//\//--}/snapshots"
-    if [ -d "$snapshot_glob" ] && [ -n "$(ls -A "$snapshot_glob" 2>/dev/null)" ]; then
-        echo "  weights already cached under $snapshot_glob"
-    else
-        echo "  downloading $repo ..."
-        bash "$SCRIPT_DIR/hf-download.sh" "$repo"
-    fi
+    # Always ask snapshot_download to validate/resume the snapshot. Merely
+    # finding a snapshot directory is unsafe: interrupted Xet transfers can
+    # leave metadata there while every weight shard is still absent.
+    echo "  validating/downloading $repo ..."
+    bash "$SCRIPT_DIR/hf-download.sh" "$repo"
 }
 
 KEYS=("$@")
