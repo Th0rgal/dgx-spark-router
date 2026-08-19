@@ -15,7 +15,7 @@
 # To add a model: add its key to vllm_keys() and a case arm in vllm_config().
 
 vllm_keys() {
-    echo "nemotron-3-super gemma-4"
+    echo "nemotron-3-super qwen3.8-orca-nvfp4 gemma-4"
 }
 
 # Populate VR_* globals for the given model key. Returns nonzero for unknown keys.
@@ -54,6 +54,24 @@ vllm_config() {
             VR_TOOL_PARSER="qwen3_coder"
             ;;
 
+
+        qwen3.8-orca-nvfp4)
+            VR_REPO="orcarouter/Qwen3.8-27B-Uncensored-NVFP4"
+            VR_SERVED="qwen3.8-orca-nvfp4"
+            VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
+            VR_MAXLEN=131072
+            VR_MAXSEQS=2
+            VR_GPU_UTIL="0.70"
+            VR_REASONING_PARSER="qwen3"
+            VR_TOOL_PARSER="qwen3_coder"
+            VR_ARGS+=(--max-num-batched-tokens 8192 --enable-chunked-prefill)
+            VR_ENV=(
+                VLLM_NVFP4_GEMM_BACKEND=marlin
+                VLLM_TEST_FORCE_FP8_MARLIN=1
+                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            )
+            ;;
 
         gemma-4)
             VR_REPO="nvidia/Gemma-4-26B-A4B-NVFP4"

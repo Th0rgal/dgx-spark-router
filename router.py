@@ -27,13 +27,13 @@ MODELS = {
     "gemma-4": "gemma-4", "gemma4": "gemma-4", "gemma": "gemma-4",
     "gemma-4-26b": "gemma-4", "gemma-4-26b-a4b": "gemma-4",
 
-    "qwen3.8-orca-q4": "qwen3.8-orca-q4", "qwen3.8-orca": "qwen3.8-orca-q4",
-    "qwen3.8-27b-uncensored": "qwen3.8-orca-q4",
-    "chimingw/qwen3.8-27b-uncensored-orcarouter-gguf": "qwen3.8-orca-q4",
+    "qwen3.8-orca-nvfp4": "qwen3.8-orca-nvfp4", "qwen3.8": "qwen3.8-orca-nvfp4",
+    "qwen3.8-27b": "qwen3.8-orca-nvfp4", "qwen3.8-27b-uncensored": "qwen3.8-orca-nvfp4",
+    "orcarouter/qwen3.8-27b-uncensored-nvfp4": "qwen3.8-orca-nvfp4",
 
 }
 
-VALID_MODELS = {"gpt-oss", "leanstral", "leanstral-1.5", "nemotron-3-super", "qwen3.8-orca-q4", "gemma-4"}
+VALID_MODELS = {"gpt-oss", "leanstral", "leanstral-1.5", "nemotron-3-super", "qwen3.8-orca-nvfp4", "gemma-4"}
 
 MODEL_INFO = [
     {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
@@ -41,7 +41,7 @@ MODEL_INFO = [
     {"id": "leanstral-2603", "object": "model", "canonical": "leanstral"},
     {"id": "nemotron-3-super", "object": "model", "canonical": "nemotron-3-super"},
 
-    {"id": "qwen3.8-orca-q4", "object": "model", "canonical": "qwen3.8-orca-q4"},
+    {"id": "qwen3.8-orca-nvfp4", "object": "model", "canonical": "qwen3.8-orca-nvfp4"},
     {"id": "gemma-4", "object": "model", "canonical": "gemma-4"},
 
 ]
@@ -255,8 +255,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: gpt-oss-120b, leanstral-1.5-119b-a6b, leanstral-2603, nemotron-3-super, qwen3.8-orca-q4, gemma-4")
-    print(f"Aliases: scientific, writing, leanstral, lean4, proving, reasoning, thinking, qwen3.8-orca, qwen3.8-27b-uncensored, gemma")
+    print(f"Models: gpt-oss-120b, leanstral-1.5-119b-a6b, leanstral-2603, nemotron-3-super, qwen3.8-orca-nvfp4, gemma-4")
+    print(f"Aliases: scientific, writing, leanstral, lean4, proving, reasoning, thinking, qwen3.8, qwen3.8-27b, qwen3.8-27b-uncensored, gemma")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
