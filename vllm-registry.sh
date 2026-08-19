@@ -58,7 +58,7 @@ vllm_config() {
         qwen3.8-orca-nvfp4)
             VR_REPO="orcarouter/Qwen3.8-27B-Uncensored-NVFP4"
             VR_SERVED="qwen3.8-orca-nvfp4"
-            VR_IMAGE="vllm/vllm-openai:v0.27.1"
+            VR_IMAGE="vllm/vllm-openai:cu129-nightly-aarch64"
             VR_MAXLEN=131072
             VR_MAXSEQS=2
             VR_GPU_UTIL="0.70"
