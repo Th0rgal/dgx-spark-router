@@ -66,6 +66,8 @@ vllm_config() {
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(--max-num-batched-tokens 8192 --enable-chunked-prefill)
             VR_ENV=(
+                VLLM_NVFP4_GEMM_BACKEND=marlin
+                VLLM_TEST_FORCE_FP8_MARLIN=1
                 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
                 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
             )
