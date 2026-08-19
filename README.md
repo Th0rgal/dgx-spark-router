@@ -245,3 +245,13 @@ sudo systemctl enable --now router
 ## License
 
 MIT
+
+## GB10 note: lm_head dequantization (qwen3.8-orca-nvfp4)
+
+The upstream checkpoint stores lm_head as FP8 W8A8 (weight + weight_scale). No
+tested vLLM build loads it on GB10 (loader rejects lm_head.weight_scale). The
+served snapshot in ~/spark/models/hf-cache has lm_head dequantized to BF16
+(mathematically identical at runtime) via tools/lmhead-dequant.py; index.json
+and config.json quantization targets updated accordingly. If the snapshot is
+ever re-downloaded, re-run the patch or vLLM will fail with
+"no module or parameter named lm_head.weight_scale".
