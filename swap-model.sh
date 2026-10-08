@@ -87,6 +87,15 @@ stop_all() {
 
 start_vllm_model() {
     local key="$1"
+    # Preflight (image, weights, config) before stopping the current backend,
+    # so a request for a broken model does not take down the working one.
+    local preflight
+    if ! preflight=$(PRINT_ONLY=1 PORT="$PORT" CONTAINER_NAME="$VLLM_CONTAINER" \
+            bash "$SCRIPT_DIR/launch-vllm.sh" "$key" 2>&1); then
+        echo "$preflight" | grep '^{' | tail -1 | grep . || \
+            echo "{\"status\":\"error\",\"message\":\"preflight failed for $key\"}"
+        return 1
+    fi
     stop_all
     PORT="$PORT" CONTAINER_NAME="$VLLM_CONTAINER" \
         bash "$SCRIPT_DIR/launch-vllm.sh" "$key"
