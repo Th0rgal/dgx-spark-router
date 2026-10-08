@@ -1,23 +1,27 @@
 #!/bin/bash
 set -e
 
+set -a
+source /etc/spark/inference.env
+set +a
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=vllm-registry.sh
 source "$SCRIPT_DIR/vllm-registry.sh"
 
-LLAMA_DIR="$HOME/llama.cpp/build/bin"
+LLAMA_DIR="${SPARK_LLAMA_BIN}"
 export LD_LIBRARY_PATH="$LLAMA_DIR:$LD_LIBRARY_PATH"
 PORT="${LLAMA_PORT:-8001}"
-LOG="$HOME/llama-server.log"
+LOG="${SPARK_INFERENCE_STATE}/llama-server.log"
 VLLM_CONTAINER="vllm-backend"
-VLLM_CURRENT_FILE="$HOME/.vllm-current"
+VLLM_CURRENT_FILE="${SPARK_INFERENCE_STATE}/vllm-current"
 N_GPU_LAYERS=99
 READY_ATTEMPTS=120
 
 declare -A MODELS
-MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
-MODELS[leanstral]="$HOME/models/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
-MODELS[leanstral-1.5]="$HOME/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
+MODELS[gpt-oss]="${SPARK_GGUF_ROOT}/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
+MODELS[leanstral]="${SPARK_GGUF_ROOT}/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
+MODELS[leanstral-1.5]="${SPARK_GGUF_ROOT}/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 
 
 is_vllm_model() {
@@ -67,7 +71,7 @@ stop_llama() {
 
 stop_vllm() {
     docker rm -f "$VLLM_CONTAINER" >/dev/null 2>&1 || true
-    local watchdog_pid_file="$HOME/vllm-watchdog.pid"
+    local watchdog_pid_file="${SPARK_INFERENCE_STATE}/vllm-watchdog.pid"
     if [ -f "$watchdog_pid_file" ]; then
         kill "$(cat "$watchdog_pid_file")" 2>/dev/null || true
         rm -f "$watchdog_pid_file"
@@ -98,7 +102,7 @@ start_llama_model() {
     case "$model_name" in
         leanstral)
             EXTRA_FLAGS+=(-fa on -fit on -c 65536)
-            EXTRA_FLAGS+=(--chat-template-file "$HOME/models/Leanstral-2603-GGUF/chat_template.jinja")
+            EXTRA_FLAGS+=(--chat-template-file "${SPARK_GGUF_ROOT}/Leanstral-2603-GGUF/chat_template.jinja")
             ;;
         leanstral-1.5)
             # Leanstral 1.5 119B A6B, GB10-tested GGUF NVFP4 quantization of mistralai/Leanstral-1.5-119B-A6B.

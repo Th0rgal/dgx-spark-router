@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Multi-Model OpenAI-Compatible Router for DGX Spark"""
 import os, json, subprocess, time, threading
+from gpu_idle import Foreground, router_heartbeat
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request, urllib.error
 
@@ -30,10 +31,16 @@ MODELS = {
     "qwen3.8-orca-nvfp4": "qwen3.8-orca-nvfp4", "qwen3.8": "qwen3.8-orca-nvfp4",
     "qwen3.8-27b": "qwen3.8-orca-nvfp4", "qwen3.8-27b-uncensored": "qwen3.8-orca-nvfp4",
     "orcarouter/qwen3.8-27b-uncensored-nvfp4": "qwen3.8-orca-nvfp4",
+    "qwen3.8-orca-q4": "qwen3.8-orca-nvfp4", "qwen3.8-orca": "qwen3.8-orca-nvfp4",
+    "qwen": "qwen3.8-orca-nvfp4",
+
+    "qwen3.8-flash-next": "qwen3.8-flash-next", "qwen3.8-flash": "qwen3.8-flash-next",
+    "flash-next": "qwen3.8-flash-next", "qwen3.8-flash-next-uncensored": "qwen3.8-flash-next",
+    "orcarouter/qwen3.8-flash-next-uncensored-nvfp4": "qwen3.8-flash-next",
 
 }
 
-VALID_MODELS = {"gpt-oss", "leanstral", "leanstral-1.5", "nemotron-3-super", "qwen3.8-orca-nvfp4", "gemma-4"}
+VALID_MODELS = {"gpt-oss", "leanstral", "leanstral-1.5", "nemotron-3-super", "qwen3.8-orca-nvfp4", "qwen3.8-flash-next", "gemma-4"}
 
 MODEL_INFO = [
     {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
@@ -42,6 +49,7 @@ MODEL_INFO = [
     {"id": "nemotron-3-super", "object": "model", "canonical": "nemotron-3-super"},
 
     {"id": "qwen3.8-orca-nvfp4", "object": "model", "canonical": "qwen3.8-orca-nvfp4"},
+    {"id": "qwen3.8-flash-next", "object": "model", "canonical": "qwen3.8-flash-next"},
     {"id": "gemma-4", "object": "model", "canonical": "gemma-4"},
 
 ]
@@ -58,7 +66,7 @@ class Router:
 
     def _detect(self):
         try:
-            r = subprocess.run(["bash", os.path.expanduser("~/swap-model.sh"), "status"],
+            r = subprocess.run(["bash", "/opt/spark/inference/swap-model.sh", "status"],
                              capture_output=True, text=True, timeout=10)
             d = json.loads(r.stdout)
             self.current = d.get("model")
@@ -95,7 +103,7 @@ class Router:
             try:
                 env = os.environ.copy()
                 env["LLAMA_PORT"] = str(BACKEND_PORT)
-                r = subprocess.run(["bash", os.path.expanduser("~/swap-model.sh"), name],
+                r = subprocess.run(["bash", "/opt/spark/inference/swap-model.sh", name],
                                  capture_output=True, text=True, timeout=1800, env=env)
                 d = json.loads(r.stdout.strip().split('\n')[-1])
                 if d.get("status") == "ready":
@@ -190,6 +198,13 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b)
 
     def do_POST(self):
+        try:
+            with Foreground():
+                self._post_with_gpu()
+        except OSError:
+            self.send_error(503, "GPU admission unavailable")
+
+    def _post_with_gpu(self):
         body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
 
         if '/chat/completions' in self.path:
@@ -216,6 +231,13 @@ class Handler(BaseHTTPRequestHandler):
                 # on anything else, so "nemotron"/"reasoning"/etc. must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
+                # Normalize OpenAI-style reasoning_effort values the qwen3.8
+                # chat template rejects (it only accepts low/medium/xhigh).
+                effort = data.get('reasoning_effort')
+                if effort is not None:
+                    mapped = {'none': 'low', 'minimal': 'low', 'high': 'xhigh'}.get(str(effort).lower())
+                    if mapped:
+                        data['reasoning_effort'] = mapped
                 # Only the legacy Leanstral-2603 backend uses ChatML sentinels. Leanstral 1.5 uses
                 # Mistral's official [TOOL_CALLS]/[ARGS] template and llama.cpp response parser.
                 if data['model'] == 'leanstral':
@@ -255,10 +277,11 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: gpt-oss-120b, leanstral-1.5-119b-a6b, leanstral-2603, nemotron-3-super, qwen3.8-orca-nvfp4, gemma-4")
-    print(f"Aliases: scientific, writing, leanstral, lean4, proving, reasoning, thinking, qwen3.8, qwen3.8-27b, qwen3.8-27b-uncensored, gemma")
+    print(f"Models: gpt-oss-120b, leanstral-1.5-119b-a6b, leanstral-2603, nemotron-3-super, qwen3.8-orca-nvfp4, qwen3.8-flash-next, gemma-4")
+    print(f"Aliases: scientific, writing, leanstral, lean4, proving, reasoning, thinking, qwen3.8, qwen3.8-orca-q4, qwen3.8-27b, qwen3.8-27b-uncensored, qwen3.8-flash, flash-next, gemma")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
     print("=" * 50)
+    router_heartbeat()
     ThreadingHTTPServer(('0.0.0.0', ROUTER_PORT), Handler).serve_forever()
