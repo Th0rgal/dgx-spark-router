@@ -94,7 +94,7 @@ vllm_config() {
             VR_TOOL_PARSER="qwen3_coder"
             VR_ARGS+=(
                 --distributed-executor-backend mp   # PLE offload hangs at TP=1 without it
-                --kv-cache-memory 17179869184
+                --kv-cache-memory 10737418240   # 10 GiB (was 16) to leave room for vllm-asr (Cohere Transcribe, port 8002)
                 --max-num-batched-tokens 8192 --enable-chunked-prefill
                 --no-async-scheduling --no-enable-prefix-caching --no-enable-flashinfer-autotune
                 --limit-mm-per-prompt '{"image":4}'

@@ -6,6 +6,11 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request, urllib.error
 
 BACKEND_PORT = 8001
+# Speech-to-text backend (Cohere Transcribe NVFP4, container vllm-asr). It runs
+# beside the chat model, so audio requests never trigger a model swap. They take
+# the shared GPU foreground lock like chat requests (pauses vanity, not qwen).
+ASR_PORT = 8002
+ASR_MODEL = "cohere-transcribe"
 ROUTER_PORT = 8000
 
 CHATML_STOP_SEQUENCES = (
@@ -51,6 +56,7 @@ MODEL_INFO = [
     {"id": "qwen3.8-orca-nvfp4", "object": "model", "canonical": "qwen3.8-orca-nvfp4"},
     {"id": "qwen3.8-flash-next", "object": "model", "canonical": "qwen3.8-flash-next"},
     {"id": "gemma-4", "object": "model", "canonical": "gemma-4"},
+    {"id": ASR_MODEL, "object": "model", "canonical": ASR_MODEL, "type": "audio-transcription"},
 
 ]
 
@@ -197,10 +203,61 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b)
 
+    def _proxy_audio(self):
+        """Stream /v1/audio/* to the ASR backend: request body and (SSE)
+        response are forwarded in chunks without buffering."""
+        import http.client
+        length = int(self.headers.get('Content-Length', 0))
+        try:
+            conn = http.client.HTTPConnection('127.0.0.1', ASR_PORT, timeout=600)
+            conn.putrequest('POST', self.path, skip_accept_encoding=True)
+            for k, v in self.headers.items():
+                if k.lower() not in ('host', 'connection', 'transfer-encoding'):
+                    conn.putheader(k, v)
+            conn.endheaders()
+            left = length
+            while left > 0:
+                chunk = self.rfile.read(min(65536, left))
+                if not chunk:
+                    break
+                conn.send(chunk)
+                left -= len(chunk)
+            r = conn.getresponse()
+        except OSError as e:
+            self.send_response(503)
+            self._cors()
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": {"message": f"transcription backend unavailable: {e}"}}).encode())
+            return
+        try:
+            self.send_response(r.status)
+            self._cors()
+            self.send_header('Content-Type', r.getheader('Content-Type', 'application/json'))
+            if 'text/event-stream' in (r.getheader('Content-Type') or ''):
+                self.send_header('Cache-Control', 'no-cache')
+            else:
+                body = r.read()
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.end_headers()
+            while chunk := r.read1(8192):
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            conn.close()
+
     def do_POST(self):
         try:
             with Foreground():
-                self._post_with_gpu()
+                if self.path.startswith('/v1/audio/'):
+                    self._proxy_audio()
+                else:
+                    self._post_with_gpu()
         except OSError:
             self.send_error(503, "GPU admission unavailable")
 
