@@ -22,7 +22,7 @@ In the `"model"` field of a request, use the **primary name** (what `/v1/models`
 | Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
 | Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
 
-| Qwen3.8 27B OrcaRouter Uncensored | **`qwen3.8-orca-q4`** | `qwen3.8-orca`, `qwen3.8-27b-uncensored`, full GGUF repo ID | llama.cpp (Q4_K_M) | Uncensored reasoning and tool use (~64K context) |
+| Qwen3.8 27B OrcaRouter Uncensored | **`qwen3.8-orca-nvfp4`** | `qwen3.8`, `qwen3.8-27b`, `qwen3.8-27b-uncensored`, full HF repo ID | vLLM (NVFP4, FP8 KV) | Uncensored reasoning and tool use (~128K context) |
 | Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
 
 Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
@@ -63,6 +63,13 @@ hf download Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4 \
   --local-dir ~/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4
 ```
 
+The quantized GGUF does not embed `tokenizer.chat_template`. The router therefore ships and
+loads Mistral's official `chat_template.jinja`; without it, llama.cpp falls back to an incompatible
+ChatML-style prompt and returns textual pseudo-calls instead of structured `message.tool_calls`.
+The vendored template includes one llama.cpp/Jinja compatibility correction: the official tool
+result branch omits the required `support_thinking` macro argument. Deploy the `chat-templates/`
+directory alongside `swap-model.sh`.
+
 Then request it through the router:
 
 ```bash
@@ -82,18 +89,18 @@ bash install-vllm.sh
 bash install-vllm.sh nemotron-3-super
 ```
 
-Registry keys include `nemotron-3-super` and `gemma-4`. Each entry in `vllm-registry.sh` defines its image, exact Hugging Face repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
+Registry keys include `nemotron-3-super`, `qwen3.8-orca-nvfp4`, and `gemma-4`. Each entry in `vllm-registry.sh` defines its image, exact Hugging Face repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
 
-Install and request the OrcaRouter-derived 4-bit fallback with:
+Install and request the exact OrcaRouter NVFP4 checkpoint with:
 
 ```bash
-hf download chimingw/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF Qwen3.8-27B-Uncensored-OrcaRouter-Q4_K_M.gguf --local-dir ~/models/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF
+bash install-vllm.sh qwen3.8-orca-nvfp4
 curl http://localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.8-orca-q4","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
+  -d '{"model":"qwen3.8-orca-nvfp4","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
 ```
 
-Runtime weights: [`chimingw/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF`](https://huggingface.co/chimingw/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF), an ungated Q4_K_M conversion whose declared base is the exact OrcaRouter FP8 checkpoint, approximately 16.5 GB. One 64K llama.cpp slot leaves substantial unified-memory headroom for prompt KV. The original block-FP8 and an NVFP4 fallback both exited in vLLM while loading shard 3/7 on this GB10 runtime.
+Runtime weights: [`orcarouter/Qwen3.8-27B-Uncensored-NVFP4`](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-NVFP4), the exact 27B uncensored NVFP4 checkpoint requested for this host. The router serves it through vLLM with FP8 KV, 128K context, and two sequences. Older block-FP8 and generic NVFP4 fallbacks failed during shard loading on this GB10 runtime, so they were removed from the active router surface.
 
 ### Start the Router
 
@@ -135,7 +142,7 @@ curl ... -d '{"model": "proving", ...}'
 curl ... -d '{"model": "reasoning", ...}'
 
 # Qwen3.8 OrcaRouter (llama.cpp) / Gemma-4 (vLLM Docker)
-curl ... -d '{"model": "qwen3.8-orca-q4", ...}'
+curl ... -d '{"model": "qwen3.8-orca-nvfp4", ...}'
 curl ... -d '{"model": "gemma", ...}'
 ```
 
@@ -238,3 +245,13 @@ sudo systemctl enable --now router
 ## License
 
 MIT
+
+## GB10 note: lm_head dequantization (qwen3.8-orca-nvfp4)
+
+The upstream checkpoint stores lm_head as FP8 W8A8 (weight + weight_scale). No
+tested vLLM build loads it on GB10 (loader rejects lm_head.weight_scale). The
+served snapshot in ~/spark/models/hf-cache has lm_head dequantized to BF16
+(mathematically identical at runtime) via tools/lmhead-dequant.py; index.json
+and config.json quantization targets updated accordingly. If the snapshot is
+ever re-downloaded, re-run the patch or vLLM will fail with
+"no module or parameter named lm_head.weight_scale".

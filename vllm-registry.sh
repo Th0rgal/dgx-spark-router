@@ -15,7 +15,7 @@
 # To add a model: add its key to vllm_keys() and a case arm in vllm_config().
 
 vllm_keys() {
-    echo "nemotron-3-super gemma-4"
+    echo "nemotron-3-super qwen3.8-orca-nvfp4 qwen3.8-flash-next gemma-4"
 }
 
 # Populate VR_* globals for the given model key. Returns nonzero for unknown keys.
@@ -36,6 +36,7 @@ vllm_config() {
     VR_REASONING_PARSER=""      # vLLM built-in reasoning parser name ("" = none)
     VR_TOOL_PARSER=""           # vLLM tool-call parser name ("" = none)
     VR_USE_SUPERV3=0            # 1 => mount + load the super_v3 reasoning plugin
+    VR_DOCKER_ARGS=()           # extra `docker run` flags (mounts, shm) for special models
     VR_ARGS=(--trust-remote-code --tensor-parallel-size 1 --disable-uvicorn-access-log)
     VR_ENV=(
         VLLM_NVFP4_GEMM_BACKEND=marlin
@@ -54,6 +55,67 @@ vllm_config() {
             VR_TOOL_PARSER="qwen3_coder"
             ;;
 
+
+        qwen3.8-orca-nvfp4)
+            VR_REPO="orcarouter/Qwen3.8-27B-Uncensored-NVFP4"
+            VR_SERVED="qwen3.8-orca-nvfp4"
+            VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
+            VR_MAXLEN=131072
+            VR_MAXSEQS=2
+            VR_GPU_UTIL="0.60"
+            VR_REASONING_PARSER="qwen3"
+            VR_TOOL_PARSER="qwen3_coder"
+            VR_ARGS+=(--max-num-batched-tokens 8192 --enable-chunked-prefill --enable-prefix-caching --mamba-cache-mode align)
+            VR_ENV=(
+                VLLM_NVFP4_GEMM_BACKEND=marlin
+                VLLM_TEST_FORCE_FP8_MARLIN=1
+                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
+                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+            )
+            ;;
+
+        qwen3.8-flash-next)
+            # Qwen3.8-Flash-Next (qwen4_exp, 125B/6B active) abliterated NVFP4 build.
+            # The checkpoint is 171 GiB; its 95 GiB bf16 n-gram (PLE) table is served
+            # from pageable host memory backed by /swap-ple.img (VLLM_PLE_CPU_OFFLOAD),
+            # leaving ~77 GiB of weights resident. Runtime and flags come from
+            # ~/qwen3.8-flash-next-dgx-spark (orcarouter profile), which built the
+            # patched image and wrote the config override mounted below.
+            # KV is capped at 16 GiB (profile default 24) to keep ~10 GiB headroom
+            # above the launcher's MemAvailable watchdog. Cold start is ~16 min.
+            VR_REPO="orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4"
+            VR_LOCAL_DIR="/home/th0rgal/models/qwen3.8-flash-next-orcarouter"
+            VR_SERVED="qwen3.8-flash-next"
+            VR_IMAGE="vllm-skinny-tp1:v1"
+            VR_MAXLEN=262144
+            VR_MAXSEQS=2
+            VR_KV_DTYPE="auto"      # QSA requires a BF16 main KV cache
+            VR_REASONING_PARSER="qwen3"
+            VR_TOOL_PARSER="qwen3_coder"
+            VR_ARGS+=(
+                --distributed-executor-backend mp   # PLE offload hangs at TP=1 without it
+                --kv-cache-memory 10737418240   # 10 GiB (was 16) to leave room for vllm-asr (Cohere Transcribe, port 8002)
+                --max-num-batched-tokens 8192 --enable-chunked-prefill
+                --no-async-scheduling --no-enable-prefix-caching --no-enable-flashinfer-autotune
+                --limit-mm-per-prompt '{"image":4}'
+                --speculative-config '{"method":"mtp","num_speculative_tokens":2}'
+            )
+            VR_ENV=(
+                VLLM_TARGET_DEVICE=cuda
+                CUTE_DSL_ARCH=sm_121a
+                VLLM_PLE_CPU_OFFLOAD=1
+                VLLM_PLE_OFFLOAD_READY_TIMEOUT=1800
+                FLASHINFER_DISABLE_VERSION_CHECK=1
+                VLLM_QSA_DET_TOPK=0
+                VLLM_QSA_EXACT_TOPK=0
+            )
+            VR_DOCKER_ARGS=(
+                --shm-size=32g
+                -v "/home/th0rgal/.local/state/qwen38-spark/config.vllm.json:${VR_LOCAL_DIR}/config.json:ro"
+                -v "/home/th0rgal/.cache/flashinfer:/root/.cache/flashinfer"
+                -v "/home/th0rgal/.cache/vllm-qwen38:/root/.cache/vllm"
+            )
+            ;;
 
         gemma-4)
             VR_REPO="nvidia/Gemma-4-26B-A4B-NVFP4"

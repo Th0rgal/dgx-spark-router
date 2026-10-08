@@ -1,24 +1,27 @@
 #!/bin/bash
 set -e
 
+set -a
+source /etc/spark/inference.env
+set +a
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=vllm-registry.sh
 source "$SCRIPT_DIR/vllm-registry.sh"
 
-LLAMA_DIR="$HOME/llama.cpp/build/bin"
+LLAMA_DIR="${SPARK_LLAMA_BIN}"
 export LD_LIBRARY_PATH="$LLAMA_DIR:$LD_LIBRARY_PATH"
 PORT="${LLAMA_PORT:-8001}"
-LOG="$HOME/llama-server.log"
+LOG="${SPARK_INFERENCE_STATE}/llama-server.log"
 VLLM_CONTAINER="vllm-backend"
-VLLM_CURRENT_FILE="$HOME/.vllm-current"
+VLLM_CURRENT_FILE="${SPARK_INFERENCE_STATE}/vllm-current"
 N_GPU_LAYERS=99
 READY_ATTEMPTS=120
 
 declare -A MODELS
-MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
-MODELS[leanstral]="$HOME/models/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
-MODELS[leanstral-1.5]="$HOME/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
-MODELS[qwen3.8-orca-q4]="$HOME/models/Qwen3.8-27B-Uncensored-OrcaRouter-GGUF/Qwen3.8-27B-Uncensored-OrcaRouter-Q4_K_M.gguf"
+MODELS[gpt-oss]="${SPARK_GGUF_ROOT}/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
+MODELS[leanstral]="${SPARK_GGUF_ROOT}/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
+MODELS[leanstral-1.5]="${SPARK_GGUF_ROOT}/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 
 
 is_vllm_model() {
@@ -52,8 +55,6 @@ get_status() {
             model="leanstral-1.5"
         elif [[ "$cmd" == *"Leanstral"* ]]; then
             model="leanstral"
-        elif [[ "$cmd" == *"Qwen3.8-27B-Uncensored-OrcaRouter"* ]]; then
-            model="qwen3.8-orca-q4"
         fi
         echo "{\"status\":\"running\",\"model\":\"$model\",\"backend\":\"llama.cpp\",\"pid\":$llama_pid}"
     else
@@ -70,7 +71,7 @@ stop_llama() {
 
 stop_vllm() {
     docker rm -f "$VLLM_CONTAINER" >/dev/null 2>&1 || true
-    local watchdog_pid_file="$HOME/vllm-watchdog.pid"
+    local watchdog_pid_file="${SPARK_INFERENCE_STATE}/vllm-watchdog.pid"
     if [ -f "$watchdog_pid_file" ]; then
         kill "$(cat "$watchdog_pid_file")" 2>/dev/null || true
         rm -f "$watchdog_pid_file"
@@ -86,6 +87,15 @@ stop_all() {
 
 start_vllm_model() {
     local key="$1"
+    # Preflight (image, weights, config) before stopping the current backend,
+    # so a request for a broken model does not take down the working one.
+    local preflight
+    if ! preflight=$(PRINT_ONLY=1 PORT="$PORT" CONTAINER_NAME="$VLLM_CONTAINER" \
+            bash "$SCRIPT_DIR/launch-vllm.sh" "$key" 2>&1); then
+        echo "$preflight" | grep '^{' | tail -1 | grep . || \
+            echo "{\"status\":\"error\",\"message\":\"preflight failed for $key\"}"
+        return 1
+    fi
     stop_all
     PORT="$PORT" CONTAINER_NAME="$VLLM_CONTAINER" \
         bash "$SCRIPT_DIR/launch-vllm.sh" "$key"
@@ -101,18 +111,21 @@ start_llama_model() {
     case "$model_name" in
         leanstral)
             EXTRA_FLAGS+=(-fa on -fit on -c 65536)
-            EXTRA_FLAGS+=(--chat-template-file "$HOME/models/Leanstral-2603-GGUF/chat_template.jinja")
+            EXTRA_FLAGS+=(--chat-template-file "${SPARK_GGUF_ROOT}/Leanstral-2603-GGUF/chat_template.jinja")
             ;;
         leanstral-1.5)
             # Leanstral 1.5 119B A6B, GB10-tested GGUF NVFP4 quantization of mistralai/Leanstral-1.5-119B-A6B.
+            # The quantized GGUF has no tokenizer.chat_template metadata. Use the official Mistral
+            # template so llama.cpp can format tools and parse [TOOL_CALLS] into message.tool_calls.
             # Benchmark/tool-call transcripts can exceed 32k context; use one slot to maximize per-request context.
             # Override with LEANSTRAL15_CTX / LEANSTRAL15_PARALLEL for probes.
+            [ -f "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja" ] || {
+                echo '{"status":"error","message":"Leanstral 1.5 chat template is missing"}'
+                return 1
+            }
             EXTRA_FLAGS+=(-fa on -fit on -c "${LEANSTRAL15_CTX:-131072}" -np "${LEANSTRAL15_PARALLEL:-1}")
             EXTRA_FLAGS+=(--alias leanstral-1.5)
-            ;;
-        qwen3.8-orca-q4)
-            EXTRA_FLAGS+=(-fa on -fit on -c "${QWEN38_CTX:-65536}" -np 1)
-            EXTRA_FLAGS+=(--alias qwen3.8-orca-q4)
+            EXTRA_FLAGS+=(--chat-template-file "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja")
             ;;
 
         *)

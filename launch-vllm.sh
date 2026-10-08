@@ -7,6 +7,10 @@ set -euo pipefail
 KEY="${1:-${VLLM_MODEL:-}}"
 [ -z "$KEY" ] && { echo "Usage: $0 <model-key>" >&2; exit 1; }
 
+set -a
+source /etc/spark/inference.env
+set +a
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=vllm-registry.sh
 source "$SCRIPT_DIR/vllm-registry.sh"
@@ -17,7 +21,7 @@ if ! vllm_config "$KEY"; then
 fi
 
 PORT=${PORT:-8001}
-HOST=${HOST:-0.0.0.0}
+HOST=${HOST:-127.0.0.1}
 CONTAINER_NAME=${CONTAINER_NAME:-vllm-backend}
 SPARK_ROOT=${SPARK_ROOT:-$HOME/spark}
 HF_HOME=${HF_HOME:-${SPARK_ROOT}/models/hf-cache}
@@ -110,6 +114,7 @@ ENTRYPOINT_CMD="exec $(printf '%q ' "${args[@]}")"
 
 docker_cmd=(
     docker run -d
+    --restart unless-stopped
     --name "$CONTAINER_NAME"
     --entrypoint bash
     --gpus all
@@ -119,6 +124,7 @@ docker_cmd=(
     -v "$SPARK_ROOT:$SPARK_ROOT"
     -v "$HOME:$HOME"
     "${parser_mount[@]}"
+    "${VR_DOCKER_ARGS[@]}"
     -e HF_HOME="$HF_HOME"
     "${env_flags[@]}"
     "$VR_IMAGE"
@@ -135,7 +141,7 @@ docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
 # Memory watchdog: if MemAvailable drops below the floor, kill the container so an
 # OOM can't take the whole box down.
-WATCHDOG_LOG="$HOME/vllm-watchdog.log"
+WATCHDOG_LOG="${SPARK_INFERENCE_STATE}/vllm-watchdog.log"
 : > "$WATCHDOG_LOG"
 (
   echo "WATCHDOG_START $(date -Is) threshold_kb=${WATCHDOG_MIN_AVAILABLE_KB} name=${CONTAINER_NAME}"
@@ -156,10 +162,10 @@ WATCHDOG_LOG="$HOME/vllm-watchdog.log"
     sleep 1
   done
 ) >> "$WATCHDOG_LOG" 2>&1 &
-echo $! > "$HOME/vllm-watchdog.pid"
+echo $! > "${SPARK_INFERENCE_STATE}/vllm-watchdog.pid"
 
 "${docker_cmd[@]}" >/dev/null
-echo "$KEY" > "$HOME/.vllm-current"
+echo "$KEY" > "${SPARK_INFERENCE_STATE}/vllm-current"
 
 echo "vLLM container '$CONTAINER_NAME' ($KEY) started; waiting for health (first cold start compiles CUDA graphs and can take 15-25 min)..." >&2
 
