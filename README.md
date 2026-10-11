@@ -1,257 +1,76 @@
-# DGX Spark Multi-Model Router
+# DGX Spark Router
 
-An OpenAI-compatible API router that automatically switches between multiple models on NVIDIA DGX Spark. Supports both llama.cpp (GGUF) and vLLM (Docker, NVFP4) backends.
+OpenAI-compatible API router for the NVIDIA DGX Spark (GB10). It serves one
+chat model through vLLM and speech-to-text through a second, always-on vLLM
+instance.
 
-## Features
+## Models
 
-- **OpenAI-compatible API** — Drop-in replacement for `/v1/chat/completions`
-- **Automatic model switching** — Request any model by name, router handles the swap
-- **Dual backend** — llama.cpp for GGUF models, vLLM Docker for NVFP4 models
-- **Model registry** — vLLM models are defined declaratively in `vllm-registry.sh`
-- **Model aliases** — Use semantic names like `scientific`, `proving`, `reasoning`
-- **Zero dependencies** — Router is pure Python stdlib, no pip packages required
+| Primary `model` name | Aliases | Backend | Notes |
+|---|---|---|---|
+| **`qwen3.8-flash-next`** | `qwen`, `qwen3.8`, `qwen3.8-flash`, `flash-next`, full HF repo ID | vLLM (NVFP4, container `vllm-backend`, port 8001) | 125B/6B-active MoE, 256K context, MTP speculative decoding; cold start ~15 min |
+| **`cohere-transcribe`** | | vLLM (NVFP4 W4A16, container `vllm-asr`, port 8002) | `/v1/audio/transcriptions` only; see [`asr/README.md`](asr/README.md) |
 
-## Supported Models
+An unknown `model` is rejected with `Unknown model: <name>`. A request without
+`model` uses `qwen3.8-flash-next`. Audio requests never swap the chat model.
 
-In the `"model"` field of a request, use the **primary name** (what `/v1/models` returns) or any of the accepted aliases. Names are case-insensitive; an unknown name is rejected with `Unknown model: <name>`.
+GPT-OSS 120B, Leanstral 2603, Leanstral 1.5, Nemotron-3 Super, Gemma-4 and
+Qwen3.8 27B OrcaRouter were retired in October 2026 (see git history to
+restore one).
 
-| Display name | Primary `model` name | Other accepted aliases | Backend | Best for |
-|---|---|---|---|---|
-| GPT-OSS 120B | **`gpt-oss-120b`** | `gpt-oss`, `scientific`, `writing` | llama.cpp | Scientific reasoning, reports |
-| Leanstral 1.5 119B A6B | **`leanstral-1.5-119b-a6b`** | `leanstral`, `leanstral-1.5`, `lean4`, `proving` | llama.cpp (GGUF NVFP4) | Lean 4 theorem proving |
-| Leanstral 2603 | **`leanstral-2603`** | legacy: `leanstral-2603` | llama.cpp | Lean 4 theorem proving |
-| Nemotron-3 Super 120B-A12B | **`nemotron-3-super`** | `nemotron`, `nemotron-3`, `nemotron-super`, `nemotron-3-super-120b`, `reasoning`, `thinking` | vLLM (NVFP4) | Deep reasoning, tool use (~32K context) |
+## Layout on the Spark
 
-| Qwen3.8 27B OrcaRouter Uncensored | **`qwen3.8-orca-nvfp4`** | `qwen3.8`, `qwen3.8-27b`, `qwen3.8-27b-uncensored`, full HF repo ID | vLLM (NVFP4, FP8 KV) | Uncensored reasoning and tool use (~128K context) |
-| Gemma-4 26B-A4B | **`gemma-4`** | `gemma4`, `gemma`, `gemma-4-26b`, `gemma-4-26b-a4b` | vLLM (NVFP4) | Multimodal chat, fast, long context (~64K) |
-
-Only one heavy backend runs at a time — the models are too large to co-reside in 128GB unified memory, so the router tears down the current backend before starting the next.
-
-## Prerequisites
-
-- DGX Spark (GB10 / Blackwell SM12.1) with 128GB unified memory
-- llama.cpp built with CUDA support (`~/llama.cpp/build/bin/llama-server`)
-- GGUF model files in `~/models/`
-- Docker installed (for the vLLM / NVFP4 models)
-- Tailscale Funnel configured (optional, for public access)
-
-## Installation
-
-```bash
-# Clone to DGX Spark
-git clone <repo> ~/dgx-spark-router
-cd ~/dgx-spark-router
-
-# Copy runtime files to home directory
-cp router.py swap-model.sh vllm-registry.sh launch-vllm.sh ~/
-chmod +x ~/swap-model.sh ~/launch-vllm.sh
-```
-
-`swap-model.sh` sources `vllm-registry.sh` and invokes `launch-vllm.sh` from its own directory, so keep the three together.
-
-
-### Leanstral 1.5 model setup
-
-Leanstral 1.5 is served through the router as `leanstral-1.5-119b-a6b`
-(canonical key `leanstral-1.5`; aliases `leanstral`, `lean4`, `proving`).
-The runtime file is the GB10-tested GGUF NVFP4 quantization of
-[`mistralai/Leanstral-1.5-119B-A6B`](https://huggingface.co/mistralai/Leanstral-1.5-119B-A6B):
-
-```bash
-hf download Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4 \
-  Leanstral-1.5-119B-A6B-NVFP4.gguf \
-  --local-dir ~/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4
-```
-
-The quantized GGUF does not embed `tokenizer.chat_template`. The router therefore ships and
-loads Mistral's official `chat_template.jinja`; without it, llama.cpp falls back to an incompatible
-ChatML-style prompt and returns textual pseudo-calls instead of structured `message.tool_calls`.
-The vendored template includes one llama.cpp/Jinja compatibility correction: the official tool
-result branch omits the required `support_thinking` macro argument. Deploy the `chat-templates/`
-directory alongside `swap-model.sh`.
-
-Then request it through the router:
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"leanstral","messages":[{"role":"user","content":"Say READY in Lean style."}],"max_tokens":32}'
-```
-
-### vLLM Model Setup (one-time)
-
-```bash
-# Install all registry models (pulls NGC images, downloads NVFP4 weights,
-# installs the super_v3 parser where needed)
-bash install-vllm.sh
-
-# ...or just one model key
-bash install-vllm.sh nemotron-3-super
-```
-
-Registry keys include `nemotron-3-super`, `qwen3.8-orca-nvfp4`, and `gemma-4`. Each entry in `vllm-registry.sh` defines its image, exact Hugging Face repo, context length, and reasoning/tool parsers. Weights download into the shared HF cache under `~/spark/models/hf-cache` via `hf-download.sh`.
-
-Install and request the exact OrcaRouter NVFP4 checkpoint with:
-
-```bash
-bash install-vllm.sh qwen3.8-orca-nvfp4
-curl http://localhost:8000/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"qwen3.8-orca-nvfp4","messages":[{"role":"user","content":"Reply with exactly READY."}],"max_tokens":16}'
-```
-
-Runtime weights: [`orcarouter/Qwen3.8-27B-Uncensored-NVFP4`](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored-NVFP4), the exact 27B uncensored NVFP4 checkpoint requested for this host. The router serves it through vLLM with FP8 KV, 128K context, and two sequences. Older block-FP8 and generic NVFP4 fallbacks failed during shard loading on this GB10 runtime, so they were removed from the active router surface.
-
-### Start the Router
-
-```bash
-# Optionally pre-warm a backend (the router also does this on demand)
-LLAMA_PORT=8001 ~/swap-model.sh gpt-oss
-
-# Start the router (port 8000)
-python3 ~/router.py
-```
+- `/opt/spark/inference`: `router.py`, `swap-model.sh`, `vllm-registry.sh`,
+  `launch-vllm.sh`, `asr/` (installed copies of this repo).
+- `/etc/spark/inference.env`: model and state paths.
+- `/var/lib/spark/inference`: current model, watchdog log.
+- `dgx-router.service` runs `router.py` on port 8000; public via Tailscale
+  Funnel at `https://spark-de79.gazella-vector.ts.net`.
 
 ## Usage
 
-### API Endpoints
-
 ```bash
-# Health check
 curl http://localhost:8000/health
-
-# List models
 curl http://localhost:8000/v1/models
 
-# Chat completion (auto-selects/swaps model)
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model": "gpt-oss", "messages": [{"role": "user", "content": "Hello"}]}'
+curl http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-flash-next","messages":[{"role":"user","content":"Hello"}]}'
+
+curl http://localhost:8000/v1/audio/transcriptions \
+  -F file=@clip.wav -F model=cohere-transcribe -F language=fr   # -F stream=true for SSE
 ```
 
-### Model Selection
+Chat and audio requests take a shared GPU foreground lock
+(`arbiter/gpu_idle.py` in dgx-spark-arbiter) so background GPU work yields.
 
-```bash
-# GPT-OSS for scientific writing
-curl ... -d '{"model": "scientific", ...}'
+## How it works
 
-# Leanstral for Lean 4 proving
-curl ... -d '{"model": "proving", ...}'
+- `router.py`: stdlib HTTP server. Resolves aliases, asks `swap-model.sh` to
+  (re)start the chat backend if needed, streams chat SSE, proxies `/v1/audio/*`
+  to port 8002.
+- `swap-model.sh`: start/stop/status of the chat backend. A model is
+  preflighted (`launch-vllm.sh` with `PRINT_ONLY=1`) before the running one is
+  stopped, so a broken entry cannot take down a working model.
+- `vllm-registry.sh`: declarative vLLM model entries (image, weights, flags).
+- `launch-vllm.sh`: `docker run` for a registry entry, plus a MemAvailable
+  watchdog that removes the container below 2 GiB to avoid a host OOM.
+- `install-vllm.sh`, `hf-download.sh`: fetch images and weights for an entry.
 
-# Nemotron-3 Super for reasoning (swaps backend to vLLM Docker)
-curl ... -d '{"model": "reasoning", ...}'
+### Adding a vLLM model
 
-# Qwen3.8 OrcaRouter (llama.cpp) / Gemma-4 (vLLM Docker)
-curl ... -d '{"model": "qwen3.8-orca-nvfp4", ...}'
-curl ... -d '{"model": "gemma", ...}'
-```
-
-The router automatically:
-1. Detects if a different model is needed
-2. Stops the current backend (llama-server or Docker container)
-3. Starts the requested model with the appropriate backend
-4. Forwards your request once ready
-
-### vLLM / NVFP4 Details
-
-The NVFP4 models run via vLLM in Docker (not llama.cpp). GB10/Blackwell-specific env defaults are baked into `vllm-registry.sh`:
-
-- `VLLM_NVFP4_GEMM_BACKEND=marlin` — stable NVFP4 GEMM path on GB10
-- `VLLM_FLASHINFER_MOE_BACKEND=latency` — throughput MoE kernels are SM120-only
-- `VLLM_USE_FLASHINFER_MOE_FP4=0` — avoid the unstable FP4 MoE fastpath
-
-`launch-vllm.sh` starts the container, writes the active key to `~/.vllm-current`, and runs a memory watchdog to prevent OOM. Nemotron-3 Super additionally loads the `super_v3` reasoning parser plus the `qwen3_coder` tool-call parser.
-
-## Architecture
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌──────────────────────┐
-│   Your App      │────▶│    router.py    │────▶│  llama-server (GGUF) │
-│                 │     │   (port 8000)   │     │  or                  │
-└─────────────────┘     └────────┬────────┘     │  vLLM Docker (NVFP4) │
-                                 │              │  (port 8001)         │
-                                 ▼              └──────────────────────┘
-                        ┌─────────────────┐
-                        │ swap-model.sh   │
-                        │ (model control) │──── sources vllm-registry.sh
-                        └─────────────────┘──── invokes launch-vllm.sh
-```
-
-## Configuration
-
-### Adding GGUF Models (llama.cpp)
-
-Edit `swap-model.sh` to add a model path:
-
-```bash
-declare -A MODELS
-MODELS[gpt-oss]="$HOME/models/gpt-oss-120b-GGUF/..."
-MODELS[leanstral-1.5]="$HOME/models/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
-MODELS[my-new-model]="$HOME/models/my-model.gguf"
-```
-
-### Adding vLLM Models (NVFP4)
-
-Add a key to `vllm_keys()` and a case arm in `vllm_config()` inside `vllm-registry.sh`:
-
-```bash
-vllm_keys() { echo "nemotron-3-super qwen3.6 gemma-4 my-model"; }
-
-# in vllm_config():
-my-model)
-    VR_REPO="org/My-Model-NVFP4"
-    VR_SERVED="my-model"
-    VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
-    ;;
-```
-
-Then run `bash install-vllm.sh my-model` to fetch the image and weights.
-
-### Adding Aliases
-
-For either backend, add aliases in `router.py`:
-
-```python
-MODELS = {
-    # ... existing ...
-    "my-model": "my-model",
-    "my-alias": "my-model",
-}
-VALID_MODELS = {..., "my-model"}
-MODEL_INFO = [..., {"id": "my-model", "object": "model", "canonical": "my-model"}]
-```
-
-### Systemd Service
-
-For production deployment, see `router.service`:
-
-```bash
-sudo cp router.service /etc/systemd/system/
-sudo systemctl enable --now router
-```
+Add its key to `vllm_keys()` and a case arm in `vllm_config()` in
+`vllm-registry.sh`, run `bash install-vllm.sh <key>`, then add the key and
+aliases to `MODELS`, `VALID_MODELS` and `MODEL_INFO` in `router.py`.
 
 ## Files
 
-- `router.py` — OpenAI-compatible HTTP server with auto-switching
-- `swap-model.sh` — Start/stop/swap models across both backends
-- `vllm-registry.sh` — Declarative registry of vLLM/NVFP4 model configs
-- `launch-vllm.sh` — vLLM Docker launcher (image, parsers, memory watchdog)
-- `install-vllm.sh` — One-time setup: pulls images, downloads weights, installs parser
-- `hf-download.sh` — Shared HuggingFace snapshot downloader
-- `super_v3_reasoning_parser.py` — vLLM reasoning parser plugin for Nemotron thinking modes
-- `benchmark.py` — Throughput/latency benchmark helper
-- `router.service` — Systemd unit file for production deployment
+- `router.py`, `swap-model.sh`, `vllm-registry.sh`, `launch-vllm.sh`
+- `install-vllm.sh`, `hf-download.sh`
+- `super_v3_reasoning_parser.py`: vLLM reasoning-parser plugin, loaded only for
+  registry entries that set `VR_REASONING_PARSER=super_v3`
+- `asr/`: Cohere Transcribe NVFP4 service
+- `benchmark.py`, `router.service`
 
 ## License
 
 MIT
-
-## GB10 note: lm_head dequantization (qwen3.8-orca-nvfp4)
-
-The upstream checkpoint stores lm_head as FP8 W8A8 (weight + weight_scale). No
-tested vLLM build loads it on GB10 (loader rejects lm_head.weight_scale). The
-served snapshot in ~/spark/models/hf-cache has lm_head dequantized to BF16
-(mathematically identical at runtime) via tools/lmhead-dequant.py; index.json
-and config.json quantization targets updated accordingly. If the snapshot is
-ever re-downloaded, re-run the patch or vLLM will fail with
-"no module or parameter named lm_head.weight_scale".

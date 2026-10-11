@@ -18,10 +18,6 @@ VLLM_CURRENT_FILE="${SPARK_INFERENCE_STATE}/vllm-current"
 N_GPU_LAYERS=99
 READY_ATTEMPTS=120
 
-declare -A MODELS
-MODELS[gpt-oss]="${SPARK_GGUF_ROOT}/gpt-oss-120b-GGUF/gpt-oss-120b-Q8_0-00001-of-00002.gguf"
-MODELS[leanstral]="${SPARK_GGUF_ROOT}/Leanstral-2603-GGUF/mistralai_Leanstral-128x3.9B-2603-Q4_K_M.gguf"
-MODELS[leanstral-1.5]="${SPARK_GGUF_ROOT}/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 
 
 is_vllm_model() {
@@ -32,7 +28,6 @@ is_vllm_model() {
 
 usage() {
     echo "Usage: $0 <model-name|status|stop>"
-    echo "llama.cpp models: ${!MODELS[*]}"
     echo "vLLM models: $(vllm_keys)"
     echo "Set LLAMA_PORT env var to change port (default: 8001)"
     exit 1
@@ -49,13 +44,7 @@ get_status() {
         echo "{\"status\":\"running\",\"model\":\"$key\",\"backend\":\"vllm-docker\"}"
     elif [ -n "$llama_pid" ]; then
         local cmd model="unknown"
-        cmd=$(ps -p "$llama_pid" -o args= 2>/dev/null || true)
-        [[ "$cmd" == *"gpt-oss"* ]] && model="gpt-oss"
-        if [[ "$cmd" == *"Leanstral-1.5"* ]] || [[ "$cmd" == *"leanstral-1.5"* ]]; then
-            model="leanstral-1.5"
-        elif [[ "$cmd" == *"Leanstral"* ]]; then
-            model="leanstral"
-        fi
+        # llama.cpp models were retired; report a leftover server, if any.
         echo "{\"status\":\"running\",\"model\":\"$model\",\"backend\":\"llama.cpp\",\"pid\":$llama_pid}"
     else
         echo '{"status":"stopped","model":null}'
@@ -101,57 +90,6 @@ start_vllm_model() {
         bash "$SCRIPT_DIR/launch-vllm.sh" "$key"
 }
 
-start_llama_model() {
-    local model_name="$1"
-    local model_path="${MODELS[$model_name]}"
-
-    stop_all
-
-    local EXTRA_FLAGS=()
-    case "$model_name" in
-        leanstral)
-            EXTRA_FLAGS+=(-fa on -fit on -c 65536)
-            EXTRA_FLAGS+=(--chat-template-file "${SPARK_GGUF_ROOT}/Leanstral-2603-GGUF/chat_template.jinja")
-            ;;
-        leanstral-1.5)
-            # Leanstral 1.5 119B A6B, GB10-tested GGUF NVFP4 quantization of mistralai/Leanstral-1.5-119B-A6B.
-            # The quantized GGUF has no tokenizer.chat_template metadata. Use the official Mistral
-            # template so llama.cpp can format tools and parse [TOOL_CALLS] into message.tool_calls.
-            # Benchmark/tool-call transcripts can exceed 32k context; use one slot to maximize per-request context.
-            # Override with LEANSTRAL15_CTX / LEANSTRAL15_PARALLEL for probes.
-            [ -f "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja" ] || {
-                echo '{"status":"error","message":"Leanstral 1.5 chat template is missing"}'
-                return 1
-            }
-            EXTRA_FLAGS+=(-fa on -fit on -c "${LEANSTRAL15_CTX:-131072}" -np "${LEANSTRAL15_PARALLEL:-1}")
-            EXTRA_FLAGS+=(--alias leanstral-1.5)
-            EXTRA_FLAGS+=(--chat-template-file "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja")
-            ;;
-
-        *)
-            EXTRA_FLAGS+=(-c 4096)
-            ;;
-    esac
-
-    nohup "$LLAMA_DIR/llama-server" \
-        -m "$model_path" \
-        -ngl "$N_GPU_LAYERS" \
-        --host 0.0.0.0 \
-        --port "$PORT" \
-        --jinja \
-        "${EXTRA_FLAGS[@]}" \
-        > "$LOG" 2>&1 &
-
-    for i in $(seq 1 "$READY_ATTEMPTS"); do
-        if curl -s "http://localhost:$PORT/health" 2>/dev/null | grep -q "ok"; then
-            echo "{\"status\":\"ready\",\"model\":\"$model_name\",\"port\":$PORT}"
-            exit 0
-        fi
-        sleep 2
-    done
-    echo '{"status":"timeout"}'
-    exit 1
-}
 
 [ $# -lt 1 ] && usage
 
@@ -164,10 +102,6 @@ MODEL_NAME="$1"
 
 if is_vllm_model "$MODEL_NAME"; then
     start_vllm_model "$MODEL_NAME"
-elif [ -n "${MODELS[$MODEL_NAME]+x}" ]; then
-    MODEL_PATH="${MODELS[$MODEL_NAME]}"
-    [ ! -f "$MODEL_PATH" ] && { echo "{\"status\":\"error\",\"message\":\"Model file not found: $MODEL_PATH\"}"; exit 1; }
-    start_llama_model "$MODEL_NAME"
 else
     echo "{\"status\":\"error\",\"message\":\"Unknown model: $MODEL_NAME\"}"
     exit 1

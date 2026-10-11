@@ -15,7 +15,7 @@
 # To add a model: add its key to vllm_keys() and a case arm in vllm_config().
 
 vllm_keys() {
-    echo "nemotron-3-super qwen3.8-orca-nvfp4 qwen3.8-flash-next gemma-4"
+    echo "qwen3.8-flash-next"
 }
 
 # Populate VR_* globals for the given model key. Returns nonzero for unknown keys.
@@ -47,32 +47,8 @@ vllm_config() {
     )
 
     case "$key" in
-        nemotron-3-super)
-            VR_REPO="nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
-            VR_SERVED="nemotron-3-super"
-            VR_USE_SUPERV3=1
-            VR_REASONING_PARSER="super_v3"
-            VR_TOOL_PARSER="qwen3_coder"
-            ;;
 
 
-        qwen3.8-orca-nvfp4)
-            VR_REPO="orcarouter/Qwen3.8-27B-Uncensored-NVFP4"
-            VR_SERVED="qwen3.8-orca-nvfp4"
-            VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
-            VR_MAXLEN=131072
-            VR_MAXSEQS=2
-            VR_GPU_UTIL="0.60"
-            VR_REASONING_PARSER="qwen3"
-            VR_TOOL_PARSER="qwen3_coder"
-            VR_ARGS+=(--max-num-batched-tokens 8192 --enable-chunked-prefill --enable-prefix-caching --mamba-cache-mode align)
-            VR_ENV=(
-                VLLM_NVFP4_GEMM_BACKEND=marlin
-                VLLM_TEST_FORCE_FP8_MARLIN=1
-                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-            )
-            ;;
 
         qwen3.8-flash-next)
             # Qwen3.8-Flash-Next (qwen4_exp, 125B/6B active) abliterated NVFP4 build.
@@ -117,28 +93,6 @@ vllm_config() {
             )
             ;;
 
-        gemma-4)
-            VR_REPO="nvidia/Gemma-4-26B-A4B-NVFP4"
-            VR_SERVED="gemma-4"
-            VR_IMAGE="nvcr.io/nvidia/vllm:26.05.post1-py3"
-            VR_MAXLEN=65536
-            VR_MAXSEQS=4
-            # Gemma-4 is a multimodal NVFP4 MoE; it needs two GB10-specific fixes:
-            #  1) vLLM forces --disable_chunked_mm_input for its bidirectional vision
-            #     attention, which then requires max_num_batched_tokens >= 2496.
-            #  2) The NVFP4 MoE oracle crashes (AVAILABLE_BACKENDS.remove on a backend
-            #     that was never registered) whenever VLLM_USE_FLASHINFER_MOE_FP4 is
-            #     set on this box. Drop the FlashInfer MoE vars and force the stable
-            #     Marlin NVFP4 path; for a modelopt-NVFP4 model FORCE_FP8_MARLIN only
-            #     selects the Marlin MoE kernel (GEMM already uses Marlin).
-            VR_ARGS+=(--max-num-batched-tokens 8192)
-            VR_ENV=(
-                VLLM_NVFP4_GEMM_BACKEND=marlin
-                VLLM_TEST_FORCE_FP8_MARLIN=1
-                VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
-                PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-            )
-            ;;
 
         *)
             return 1

@@ -21,43 +21,17 @@ CHATML_STOP_SEQUENCES = (
 )
 
 MODELS = {
-    "gpt-oss": "gpt-oss", "gpt-oss-120b": "gpt-oss", "scientific": "gpt-oss", "writing": "gpt-oss",
-    "leanstral": "leanstral-1.5", "leanstral-1.5": "leanstral-1.5", "leanstral-15": "leanstral-1.5",
-    "leanstral-1-5": "leanstral-1.5", "leanstral-1.5-119b": "leanstral-1.5",
-    "leanstral-1.5-119b-a6b": "leanstral-1.5", "leanstral-119b": "leanstral-1.5",
-    "leanstral-2603": "leanstral", "lean4": "leanstral-1.5", "proving": "leanstral-1.5",
-    "nemotron-3-super": "nemotron-3-super", "nemotron": "nemotron-3-super", "nemotron-3": "nemotron-3-super",
-    "nemotron-super": "nemotron-3-super", "nemotron-3-super-120b": "nemotron-3-super",
-    "reasoning": "nemotron-3-super", "thinking": "nemotron-3-super",
-
-    "gemma-4": "gemma-4", "gemma4": "gemma-4", "gemma": "gemma-4",
-    "gemma-4-26b": "gemma-4", "gemma-4-26b-a4b": "gemma-4",
-
-    "qwen3.8-orca-nvfp4": "qwen3.8-orca-nvfp4", "qwen3.8": "qwen3.8-orca-nvfp4",
-    "qwen3.8-27b": "qwen3.8-orca-nvfp4", "qwen3.8-27b-uncensored": "qwen3.8-orca-nvfp4",
-    "orcarouter/qwen3.8-27b-uncensored-nvfp4": "qwen3.8-orca-nvfp4",
-    "qwen3.8-orca-q4": "qwen3.8-orca-nvfp4", "qwen3.8-orca": "qwen3.8-orca-nvfp4",
-    "qwen": "qwen3.8-orca-nvfp4",
-
     "qwen3.8-flash-next": "qwen3.8-flash-next", "qwen3.8-flash": "qwen3.8-flash-next",
     "flash-next": "qwen3.8-flash-next", "qwen3.8-flash-next-uncensored": "qwen3.8-flash-next",
     "orcarouter/qwen3.8-flash-next-uncensored-nvfp4": "qwen3.8-flash-next",
-
+    "qwen": "qwen3.8-flash-next", "qwen3.8": "qwen3.8-flash-next",
 }
 
-VALID_MODELS = {"gpt-oss", "leanstral", "leanstral-1.5", "nemotron-3-super", "qwen3.8-orca-nvfp4", "qwen3.8-flash-next", "gemma-4"}
+VALID_MODELS = {"qwen3.8-flash-next"}
 
 MODEL_INFO = [
-    {"id": "gpt-oss-120b", "object": "model", "canonical": "gpt-oss"},
-    {"id": "leanstral-1.5-119b-a6b", "object": "model", "canonical": "leanstral-1.5"},
-    {"id": "leanstral-2603", "object": "model", "canonical": "leanstral"},
-    {"id": "nemotron-3-super", "object": "model", "canonical": "nemotron-3-super"},
-
-    {"id": "qwen3.8-orca-nvfp4", "object": "model", "canonical": "qwen3.8-orca-nvfp4"},
     {"id": "qwen3.8-flash-next", "object": "model", "canonical": "qwen3.8-flash-next"},
-    {"id": "gemma-4", "object": "model", "canonical": "gemma-4"},
     {"id": ASR_MODEL, "object": "model", "canonical": ASR_MODEL, "type": "audio-transcription"},
-
 ]
 
 class Router:
@@ -152,14 +126,6 @@ class Router:
         return urllib.request.urlopen(req, timeout=1800)
 
 router = Router()
-
-def add_chatml_stops(data):
-    existing = data.get("stop", [])
-    if isinstance(existing, str):
-        existing = [existing]
-    elif not isinstance(existing, list):
-        existing = []
-    data["stop"] = existing + [stop for stop in CHATML_STOP_SEQUENCES if stop not in existing]
 
 def strip_chatml_sentinels(body):
     for sentinel in CHATML_STOP_SEQUENCES:
@@ -267,7 +233,7 @@ class Handler(BaseHTTPRequestHandler):
         if '/chat/completions' in self.path:
             try:
                 data = json.loads(body)
-                requested = data.get('model', 'gpt-oss')
+                requested = data.get('model', 'qwen3.8-flash-next')
             except json.JSONDecodeError as e:
                 self.send_response(400)
                 self._cors()
@@ -285,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 # Rewrite the alias to the backend's served model name. vLLM
                 # validates the model field against --served-model-name and 404s
-                # on anything else, so "nemotron"/"reasoning"/etc. must become
+                # on anything else, so aliases like "qwen"/"flash-next" must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
                 # Normalize OpenAI-style reasoning_effort values the qwen3.8
@@ -295,10 +261,6 @@ class Handler(BaseHTTPRequestHandler):
                     mapped = {'none': 'low', 'minimal': 'low', 'high': 'xhigh'}.get(str(effort).lower())
                     if mapped:
                         data['reasoning_effort'] = mapped
-                # Only the legacy Leanstral-2603 backend uses ChatML sentinels. Leanstral 1.5 uses
-                # Mistral's official [TOOL_CALLS]/[ARGS] template and llama.cpp response parser.
-                if data['model'] == 'leanstral':
-                    add_chatml_stops(data)
                 body = json.dumps(data).encode()
                 if data.get('stream'):
                     try:
@@ -334,8 +296,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: gpt-oss-120b, leanstral-1.5-119b-a6b, leanstral-2603, nemotron-3-super, qwen3.8-orca-nvfp4, qwen3.8-flash-next, gemma-4")
-    print(f"Aliases: scientific, writing, leanstral, lean4, proving, reasoning, thinking, qwen3.8, qwen3.8-orca-q4, qwen3.8-27b, qwen3.8-27b-uncensored, qwen3.8-flash, flash-next, gemma")
+    print(f"Models: qwen3.8-flash-next (chat), {ASR_MODEL} (/v1/audio/transcriptions)")
+    print(f"Aliases: qwen, qwen3.8, qwen3.8-flash, flash-next")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
