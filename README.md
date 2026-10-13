@@ -9,13 +9,17 @@ instance.
 | Primary `model` name | Aliases | Backend | Notes |
 |---|---|---|---|
 | **`qwen3.8-flash-next`** | `qwen`, `qwen3.8`, `qwen3.8-flash`, `flash-next`, full HF repo ID | vLLM (NVFP4, container `vllm-backend`, port 8001) | 125B/6B-active MoE, 256K context, MTP speculative decoding; cold start ~15 min |
+| **`leanstral-1.5-119b-a6b`** | `leanstral`, `leanstral-1.5`, `lean4`, `proving` | llama.cpp (GGUF NVFP4, port 8001) | Lean 4 proving, tool calls via `chat-templates/leanstral-1.5.jinja`; 128K context; load ~3.6 min. Weights: `Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4` in `~/models` |
 | **`cohere-transcribe`** | | vLLM (NVFP4 W4A16, container `vllm-asr`, port 8002) | `/v1/audio/transcriptions` only; see [`asr/README.md`](asr/README.md) |
 
 An unknown `model` is rejected with `Unknown model: <name>`. A request without
 `model` uses `qwen3.8-flash-next`. Audio requests never swap the chat model.
 
-GPT-OSS 120B, Leanstral 2603, Leanstral 1.5, Nemotron-3 Super, Gemma-4 and
-Qwen3.8 27B OrcaRouter were retired in October 2026 (see git history to
+Only one chat model is loaded at a time; switching between qwen3.8-flash-next
+and Leanstral 1.5 takes the load time of the target model.
+
+GPT-OSS 120B, Leanstral 2603, Nemotron-3 Super, Gemma-4 and Qwen3.8 27B
+OrcaRouter were retired in October 2026 (see git history to
 restore one).
 
 ## Layout on the Spark
@@ -68,6 +72,7 @@ aliases to `MODELS`, `VALID_MODELS` and `MODEL_INFO` in `router.py`.
 - `install-vllm.sh`, `hf-download.sh`
 - `super_v3_reasoning_parser.py`: vLLM reasoning-parser plugin, loaded only for
   registry entries that set `VR_REASONING_PARSER=super_v3`
+- `chat-templates/leanstral-1.5.jinja`: Mistral's official template (the GGUF has none)
 - `asr/`: Cohere Transcribe NVFP4 service
 - `benchmark.py`, `router.service`
 

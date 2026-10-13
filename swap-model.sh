@@ -16,7 +16,11 @@ LOG="${SPARK_INFERENCE_STATE}/llama-server.log"
 VLLM_CONTAINER="vllm-backend"
 VLLM_CURRENT_FILE="${SPARK_INFERENCE_STATE}/vllm-current"
 N_GPU_LAYERS=99
-READY_ATTEMPTS=120
+READY_ATTEMPTS=300   # x2 s; a 67 GB GGUF needs ~4 min from a cold page cache
+
+# llama.cpp (GGUF) models
+declare -A MODELS
+MODELS[leanstral-1.5]="${SPARK_GGUF_ROOT}/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 
 
 
@@ -28,6 +32,7 @@ is_vllm_model() {
 
 usage() {
     echo "Usage: $0 <model-name|status|stop>"
+    echo "llama.cpp models: ${!MODELS[*]}"
     echo "vLLM models: $(vllm_keys)"
     echo "Set LLAMA_PORT env var to change port (default: 8001)"
     exit 1
@@ -44,7 +49,8 @@ get_status() {
         echo "{\"status\":\"running\",\"model\":\"$key\",\"backend\":\"vllm-docker\"}"
     elif [ -n "$llama_pid" ]; then
         local cmd model="unknown"
-        # llama.cpp models were retired; report a leftover server, if any.
+        cmd=$(ps -p "$llama_pid" -o args= 2>/dev/null || true)
+        [[ "$cmd" == *"Leanstral-1.5"* ]] && model="leanstral-1.5"
         echo "{\"status\":\"running\",\"model\":\"$model\",\"backend\":\"llama.cpp\",\"pid\":$llama_pid}"
     else
         echo '{"status":"stopped","model":null}'
@@ -91,6 +97,52 @@ start_vllm_model() {
 }
 
 
+start_llama_model() {
+    local model_name="$1"
+    local model_path="${MODELS[$model_name]}"
+    local EXTRA_FLAGS=()
+    case "$model_name" in
+        leanstral-1.5)
+            # Leanstral 1.5 119B A6B, GGUF NVFP4 (Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4).
+            # The GGUF has no tokenizer.chat_template; use Mistral's official template so
+            # llama.cpp formats tools and parses [TOOL_CALLS] into message.tool_calls.
+            # One slot to maximize per-request context (LEANSTRAL15_CTX / _PARALLEL override).
+            [ -f "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja" ] || {
+                echo '{"status":"error","message":"Leanstral 1.5 chat template is missing"}'
+                return 1
+            }
+            EXTRA_FLAGS+=(-fa on -fit on -c "${LEANSTRAL15_CTX:-131072}" -np "${LEANSTRAL15_PARALLEL:-1}")
+            EXTRA_FLAGS+=(--alias leanstral-1.5)
+            EXTRA_FLAGS+=(--chat-template-file "$SCRIPT_DIR/chat-templates/leanstral-1.5.jinja")
+            ;;
+    esac
+
+    stop_all
+
+    nohup "$LLAMA_DIR/llama-server" \
+        -m "$model_path" \
+        -ngl "$N_GPU_LAYERS" \
+        --host 127.0.0.1 \
+        --port "$PORT" \
+        --jinja \
+        "${EXTRA_FLAGS[@]}" \
+        > "$LOG" 2>&1 &
+
+    for i in $(seq 1 "$READY_ATTEMPTS"); do
+        if curl -s "http://localhost:$PORT/health" 2>/dev/null | grep -q "ok"; then
+            echo "{\"status\":\"ready\",\"model\":\"$model_name\",\"port\":$PORT}"
+            exit 0
+        fi
+        pgrep -x llama-server >/dev/null || {
+            echo "{\"status\":\"error\",\"message\":\"llama-server exited, see $LOG\"}"
+            exit 1
+        }
+        sleep 2
+    done
+    echo '{"status":"timeout"}'
+    exit 1
+}
+
 [ $# -lt 1 ] && usage
 
 case "$1" in
@@ -102,6 +154,9 @@ MODEL_NAME="$1"
 
 if is_vllm_model "$MODEL_NAME"; then
     start_vllm_model "$MODEL_NAME"
+elif [ -n "${MODELS[$MODEL_NAME]+x}" ]; then
+    [ -f "${MODELS[$MODEL_NAME]}" ] || { echo "{\"status\":\"error\",\"message\":\"Model file not found: ${MODELS[$MODEL_NAME]}\"}"; exit 1; }
+    start_llama_model "$MODEL_NAME"
 else
     echo "{\"status\":\"error\",\"message\":\"Unknown model: $MODEL_NAME\"}"
     exit 1

@@ -25,12 +25,18 @@ MODELS = {
     "flash-next": "qwen3.8-flash-next", "qwen3.8-flash-next-uncensored": "qwen3.8-flash-next",
     "orcarouter/qwen3.8-flash-next-uncensored-nvfp4": "qwen3.8-flash-next",
     "qwen": "qwen3.8-flash-next", "qwen3.8": "qwen3.8-flash-next",
+
+    "leanstral-1.5": "leanstral-1.5", "leanstral": "leanstral-1.5", "leanstral-15": "leanstral-1.5",
+    "leanstral-1-5": "leanstral-1.5", "leanstral-1.5-119b": "leanstral-1.5",
+    "leanstral-1.5-119b-a6b": "leanstral-1.5", "leanstral-1.5-nvfp4": "leanstral-1.5",
+    "lean4": "leanstral-1.5", "proving": "leanstral-1.5",
 }
 
-VALID_MODELS = {"qwen3.8-flash-next"}
+VALID_MODELS = {"qwen3.8-flash-next", "leanstral-1.5"}
 
 MODEL_INFO = [
     {"id": "qwen3.8-flash-next", "object": "model", "canonical": "qwen3.8-flash-next"},
+    {"id": "leanstral-1.5-119b-a6b", "object": "model", "canonical": "leanstral-1.5"},
     {"id": ASR_MODEL, "object": "model", "canonical": ASR_MODEL, "type": "audio-transcription"},
 ]
 
@@ -296,8 +302,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: qwen3.8-flash-next (chat), {ASR_MODEL} (/v1/audio/transcriptions)")
-    print(f"Aliases: qwen, qwen3.8, qwen3.8-flash, flash-next")
+    print(f"Models: qwen3.8-flash-next, leanstral-1.5-119b-a6b (chat), {ASR_MODEL} (/v1/audio/transcriptions)")
+    print(f"Aliases: qwen, qwen3.8, qwen3.8-flash, flash-next, leanstral, lean4, proving")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
