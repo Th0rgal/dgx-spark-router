@@ -10,7 +10,7 @@ instance.
 |---|---|---|---|
 | **`qwen3.8-flash-next`** | `qwen`, `qwen3.8`, `qwen3.8-flash`, `flash-next`, full HF repo ID | vLLM (NVFP4, container `vllm-backend`, port 8001) | 125B/6B-active MoE, 256K context, MTP speculative decoding; cold start ~15 min |
 | **`leanstral-1.5-119b-a6b`** | `leanstral`, `leanstral-1.5`, `lean4`, `proving` | llama.cpp (GGUF NVFP4, port 8001) | Lean 4 proving, tool calls via `chat-templates/leanstral-1.5.jinja`; 128K context; load ~3.6 min. Weights: `Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4` in `~/models` |
-| **`glm-5.3-flash`** | `glm`, `glm-5.3`, `glm5`, full HF repo ID | **SparkLab** native engine (not vLLM), NVMe expert streaming, port 8001 | GLM-5.3-Flash-Uncensored-NVFP4, 320B/18B-active; ~3.5-5 tok/s, 8K context, load ~35 s. See [`sparklab/README.md`](sparklab/README.md) |
+| **`glm-5.3-flash`** | `glm`, `glm-5.3`, `glm5`, full HF repo ID | **SparkLab** native engine (not vLLM), NVMe expert streaming, port 8001 | GLM-5.3-Flash-Uncensored-NVFP4, 320B/18B-active, text + image input; ~4-5 tok/s, 8K context, load ~35 s. See [`sparklab/README.md`](sparklab/README.md) |
 | **`cohere-transcribe`** | | vLLM (NVFP4 W4A16, container `vllm-asr`, port 8002) | `/v1/audio/transcriptions` only; see [`asr/README.md`](asr/README.md) |
 
 An unknown `model` is rejected with `Unknown model: <name>`. A request without

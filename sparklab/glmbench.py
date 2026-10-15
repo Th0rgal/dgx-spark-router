@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Streaming probe for glm-5.3-flash through the router: TTFT, decode tok/s,
 reasoning/content split, tool calls, NVMe bytes read during the request."""
-import json, sys, time, urllib.request
+import base64, json, sys, time, urllib.error, urllib.request
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"
 
@@ -20,11 +20,21 @@ def run(label, messages, max_tokens=512, effort="low", tools=None):
             "reasoning_effort": effort, "temperature": 0}
     if tools:
         body["tools"] = tools
-    req = urllib.request.Request(URL, data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
-    r0, t0 = nvme_read_bytes(), time.perf_counter()
+    data = json.dumps(body).encode()
+    while True:  # the router answers 503 + Retry-After while another model is protected
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                URL.replace("/v1/chat/completions", "/health")), timeout=10).read()
+            req = urllib.request.Request(URL, data=data, headers={"Content-Type": "application/json"})
+            r0, t0 = nvme_read_bytes(), time.perf_counter()
+            r = urllib.request.urlopen(req, timeout=3600)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 503:
+                raise
+            time.sleep(min(int(e.headers.get("Retry-After") or 30), 120))
     first = None; reasoning = content = ""; tool_calls = {}; usage = None; finish = None; chunks = 0
-    with urllib.request.urlopen(req, timeout=3600) as r:
+    with r:
         for raw in r:
             line = raw.decode().strip()
             if not line.startswith("data:") or line == "data: [DONE]":
@@ -72,6 +82,13 @@ if __name__ == "__main__":
         tools = [{"type": "function", "function": {"name": "get_weather", "description": "Current weather for a city",
                   "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}]
         run("tool-call", [{"role": "user", "content": "What is the weather in Lisbon right now? Use the tool."}], tools=tools)
+    elif which in ("image", "image-warm"):
+        png = sys.argv[2]
+        url = "data:image/png;base64," + base64.b64encode(open(png, "rb").read()).decode()
+        run(which, [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": url}},
+            {"type": "text", "text": "Describe this image precisely: shapes, colors, positions and any text."}]}],
+            max_tokens=400)
     elif which == "reason":
         run("reasoning-high", [{"role": "user", "content": "A bat and a ball cost $1.10 total. The bat costs $1.00 more than the ball. How much is the ball? Answer with the amount."}],
             max_tokens=1536, effort="high")

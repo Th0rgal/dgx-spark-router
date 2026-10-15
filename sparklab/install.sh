@@ -5,7 +5,8 @@
 #  2. pins: flashinfer companions 0.6.18.post1, transformers 5.16.1
 #  3. dist-port patch
 #  4. weights + FTW conversion (experts copied byte-for-byte, KDA kept BF16)
-#  5. launch files + systemd unit (installed, not enabled: the router starts it)
+#  5. GLM-5.3 image input: vision extra + glm-vision patch (ported from FreeToken)
+#  6. launch files + systemd unit (installed, not enabled: the router starts it)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REL=https://github.com/sixteen-miles-labs/sparklab/releases/download/v0.1.3
@@ -28,9 +29,13 @@ if [ ! -x "$VENV/bin/sparklab" ]; then
     "flashinfer-cubin==0.6.18.post1" "flashinfer-jit-cache==0.6.18.post1"
 fi
 # transformers >= 5.19 renames GLM-5.3 layer types and breaks SparkLab 0.1.3's parser.
-"$UV" pip install --python "$VENV" "transformers==5.16.1"
+# Pillow + torchvision: SparkLab's "vision" extra, needed by the image processor.
+"$UV" pip install --python "$VENV" --index-strategy unsafe-best-match \
+  --extra-index-url https://download.pytorch.org/whl/cu130 \
+  "transformers==5.16.1" "Pillow>=10" "torchvision==0.26.0" "torch==2.11.0"
 ARGS="$VENV/lib/python3.12/site-packages/sparklab/serving/args.py"
 grep -q SPARKLAB_DIST_PORT "$ARGS" || patch "$ARGS" "$HERE/sparklab-dist-port.patch"
+"$VENV/bin/python" "$HERE/glm-vision/apply-glm-vision.py" "$VENV/lib/python3.12/site-packages/sparklab"
 
 [ -f "$SRC/model.safetensors.index.json" ] || \
   hf download orcarouter/GLM-5.3-Flash-Uncensored-NVFP4 --local-dir "$SRC"

@@ -49,13 +49,41 @@ Decode is I/O bound by expert-cache misses (~2 GiB NVMe per token). Raising
 `GLM53_MEMORY_RATIO` toward 0.96 roughly doubles the cache (published FTW recipe:
 ~5-6 tok/s) at the cost of the OS/ASR reserve.
 
+## Image input (vision)
+SparkLab 0.1.3 drops GLM-5.3's vision tower; FreeToken (its upstream) serves it
+but keeps every expert in host RAM, so it cannot run this checkpoint. `glm-vision/`
+ports the image path into SparkLab (`apply-glm-vision.py`, idempotent, run by
+`install.sh`): the transformers reference `Glm5NextVisionModel` loaded from the
+source checkpoint's `model.visual.*` tensors (BF16, unchanged, 564M params,
+~1.1 GiB GPU), GLM's image processor, `<|image|>` expansion (t*h*w/4 tokens,
+1-D positions) and an embedding scatter in the GLM decoder.
+
+- Enabled by `GLM53_VISION_MODEL` (source checkpoint dir) in `glm53.env`; empty = text-only.
+- `GLM53_IMAGE_MAX_TOKENS=1024` caps tokens per image (checkpoint: up to 8000).
+- OpenAI `image_url` parts with base64 `data:image/...` URLs, at most 4 images
+  per request, 16 MiB / 16 MP each. Remote http(s) URLs are not fetched.
+- No video: grids with t > 1 are rejected (no engine on GB10 implements GLM video).
+
+| Image probe | Image tokens | TTFT | Decode | Result |
+|---|---|---|---|---|
+| Synthetic 448x336 (first request after load) | 192 | 104 s (33 s load + 71 s cold) | 4.4 tok/s | red square, blue circle, "SPARK 42" all correct |
+| Same image again | 192 | 12.1 s | 4.3 tok/s | identical |
+| COCO photo 640x480 | 414 | 14.6 s | 5.0 tok/s | "two tabby cats sleeping on a pink blanket on a red couch" |
+
+With vision loaded: 4,986 expert-cache slots, 11.3 GiB free after init, min
+MemAvailable 18 GiB, no swap growth; text, tool calls and reasoning unchanged.
+
 ## Not supported
-Vision/video input, MTP speculative decoding, >1 concurrent request, context
-> ~9k tokens. Reasoning is returned in `reasoning_content`. The budget is set
+Video input, remote image URLs, MTP speculative decoding, >1 concurrent request,
+context > ~9k tokens. Reasoning is returned in `reasoning_content`. The budget is set
 with `reasoning_effort` (router maps it into `chat_template_kwargs`; GLM levels
 low/high/max, default max when omitted).
 
 ## Rollback
+Vision only: set `GLM53_VISION_MODEL=` (empty) in `/opt/spark/inference/sparklab/glm53.env`;
+the patched code is inert without it. Original SparkLab files are in
+`/opt/sparklab/backup-pre-glm-vision/`.
+
 ```bash
 sudo systemctl stop sparklab-glm53 && sudo rm /etc/systemd/system/sparklab-glm53.service
 sudo systemctl daemon-reload

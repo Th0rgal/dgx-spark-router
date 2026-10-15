@@ -3,6 +3,8 @@
 # Started/stopped by sparklab-glm53.service, which swap-model.sh controls.
 set -euo pipefail
 cd /tmp   # SparkLab ships a top-level platform.py; never run from its source tree
+VISION=()
+[ -n "${GLM53_VISION_MODEL:-}" ] && VISION=(--vision-model "$GLM53_VISION_MODEL")
 exec /opt/sparklab/venv/bin/sparklab serve \
   --model "$GLM53_MODEL" \
   --served-model-name "$GLM53_SERVED_NAME" \
@@ -15,4 +17,5 @@ exec /opt/sparklab/venv/bin/sparklab serve \
   --cuda-graph-max-bs 0 --page-size 1 --cache-type naive \
   --max-running-requests "$GLM53_MAX_RUNNING" \
   --max-seq-len-override "$GLM53_MAX_SEQ_LEN" \
-  --reasoning-parser glm --tool-call-parser glm47
+  --reasoning-parser glm --tool-call-parser glm47 \
+  "${VISION[@]}"
