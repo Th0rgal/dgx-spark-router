@@ -1,0 +1,15 @@
+--- /opt/sparklab/venv/lib/python3.12/site-packages/sparklab/serving/args.py.orig	2026-10-15 14:42:35.148366873 +0100
++++ /opt/sparklab/venv/lib/python3.12/site-packages/sparklab/serving/args.py	2026-10-15 14:42:35.166521677 +0100
+@@ -70,7 +70,11 @@
+ 
+     @property
+     def distributed_addr(self) -> str:
+-        return f"tcp://127.0.0.1:{self.server_port + 1}"
++        # Local patch (dgx-spark-router/sparklab): port+1 can collide with other
++        # services (vllm-asr owns 8002 on the Spark); allow an explicit port.
++        import os
++        port = os.environ.get("SPARKLAB_DIST_PORT") or self.server_port + 1
++        return f"tcp://127.0.0.1:{port}"
+ 
+ 
+ def parse_args(

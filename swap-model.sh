@@ -22,6 +22,11 @@ READY_ATTEMPTS=300   # x2 s; a 67 GB GGUF needs ~4 min from a cold page cache
 declare -A MODELS
 MODELS[leanstral-1.5]="${SPARK_GGUF_ROOT}/Leanstral-1.5-119B-A6B-GGUF-NVFP4/Leanstral-1.5-119B-A6B-NVFP4.gguf"
 
+# SparkLab native engine (NVMe expert streaming); model key -> systemd unit.
+declare -A SPARKLAB_UNITS
+SPARKLAB_UNITS[glm-5.3-flash]="sparklab-glm53.service"
+SPARKLAB_READY_ATTEMPTS=900   # x2 s
+
 
 
 is_vllm_model() {
@@ -34,6 +39,7 @@ usage() {
     echo "Usage: $0 <model-name|status|stop>"
     echo "llama.cpp models: ${!MODELS[*]}"
     echo "vLLM models: $(vllm_keys)"
+    echo "SparkLab models: ${!SPARKLAB_UNITS[*]}"
     echo "Set LLAMA_PORT env var to change port (default: 8001)"
     exit 1
 }
@@ -42,6 +48,14 @@ get_status() {
     local llama_pid docker_running
     llama_pid=$(pgrep -x llama-server || true)
     docker_running=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -x "$VLLM_CONTAINER" || true)
+
+    local key
+    for key in "${!SPARKLAB_UNITS[@]}"; do
+        if systemctl is-active -q "${SPARKLAB_UNITS[$key]}"; then
+            echo "{\"status\":\"running\",\"model\":\"$key\",\"backend\":\"sparklab\"}"
+            return
+        fi
+    done
 
     if [ -n "$docker_running" ]; then
         local key="unknown"
@@ -75,9 +89,47 @@ stop_vllm() {
     sleep 2
 }
 
+stop_sparklab() {
+    local unit
+    for unit in "${SPARKLAB_UNITS[@]}"; do
+        systemctl is-active -q "$unit" && sudo -n systemctl stop "$unit"
+    done
+    return 0
+}
+
 stop_all() {
     stop_llama
     stop_vllm
+    stop_sparklab
+}
+
+start_sparklab_model() {
+    local key="$1" unit="${SPARKLAB_UNITS[$1]}"
+    # Preflight before stopping the current backend.
+    local envfile="$SCRIPT_DIR/sparklab/glm53.env" model
+    model=$(sed -n 's/^GLM53_MODEL=//p' "$envfile" 2>/dev/null)
+    if [ ! -x /opt/sparklab/venv/bin/sparklab ] || [ ! -f "$model/freetoken_weight.json" ]; then
+        echo "{\"status\":\"error\",\"message\":\"SparkLab or prepared FTW checkpoint missing for $key\"}"
+        return 1
+    fi
+    stop_all
+    sudo -n systemctl start "$unit"
+    for i in $(seq 1 "$SPARKLAB_READY_ATTEMPTS"); do
+        # The SparkLab frontend answers /health at once with status "loading";
+        # only "ok" means the engine finished loading.
+        if curl -s "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"status": *"ok"'; then
+            echo "{\"status\":\"ready\",\"model\":\"$key\",\"port\":$PORT}"
+            exit 0
+        fi
+        systemctl is-active -q "$unit" || {
+            echo "{\"status\":\"error\",\"message\":\"$unit exited, see ${SPARK_INFERENCE_STATE}/sparklab-glm53.log\"}"
+            exit 1
+        }
+        sleep 2
+    done
+    sudo -n systemctl stop "$unit"
+    echo '{"status":"timeout"}'
+    exit 1
 }
 
 start_vllm_model() {
@@ -154,6 +206,8 @@ MODEL_NAME="$1"
 
 if is_vllm_model "$MODEL_NAME"; then
     start_vllm_model "$MODEL_NAME"
+elif [ -n "${SPARKLAB_UNITS[$MODEL_NAME]+x}" ]; then
+    start_sparklab_model "$MODEL_NAME"
 elif [ -n "${MODELS[$MODEL_NAME]+x}" ]; then
     [ -f "${MODELS[$MODEL_NAME]}" ] || { echo "{\"status\":\"error\",\"message\":\"Model file not found: ${MODELS[$MODEL_NAME]}\"}"; exit 1; }
     start_llama_model "$MODEL_NAME"

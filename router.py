@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Multi-Model OpenAI-Compatible Router for DGX Spark"""
-import os, json, subprocess, time, threading
+import contextlib, os, json, subprocess, time, threading
 from gpu_idle import Foreground, router_heartbeat
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request, urllib.error
@@ -11,6 +11,11 @@ BACKEND_PORT = 8001
 # the shared GPU foreground lock like chat requests (pauses vanity, not qwen).
 ASR_PORT = 8002
 ASR_MODEL = "cohere-transcribe"
+# A chat model that served a request within SWAP_GRACE_SEC is not evicted for
+# another one; that request gets 503 + Retry-After instead. Without this, two
+# clients of different models (or one retrying client) make the router swap
+# back and forth, and every swap to qwen3.8-flash-next costs ~15 min.
+SWAP_GRACE_SEC = int(os.environ.get("ROUTER_SWAP_GRACE_SEC", "600"))
 ROUTER_PORT = 8000
 
 CHATML_STOP_SEQUENCES = (
@@ -30,19 +35,25 @@ MODELS = {
     "leanstral-1-5": "leanstral-1.5", "leanstral-1.5-119b": "leanstral-1.5",
     "leanstral-1.5-119b-a6b": "leanstral-1.5", "leanstral-1.5-nvfp4": "leanstral-1.5",
     "lean4": "leanstral-1.5", "proving": "leanstral-1.5",
+
+    "glm-5.3-flash": "glm-5.3-flash", "glm": "glm-5.3-flash", "glm-5.3": "glm-5.3-flash",
+    "glm5": "glm-5.3-flash", "glm-5.3-flash-uncensored": "glm-5.3-flash",
+    "orcarouter/glm-5.3-flash-uncensored-nvfp4": "glm-5.3-flash",
 }
 
-VALID_MODELS = {"qwen3.8-flash-next", "leanstral-1.5"}
+VALID_MODELS = {"qwen3.8-flash-next", "leanstral-1.5", "glm-5.3-flash"}
 
 MODEL_INFO = [
     {"id": "qwen3.8-flash-next", "object": "model", "canonical": "qwen3.8-flash-next"},
     {"id": "leanstral-1.5-119b-a6b", "object": "model", "canonical": "leanstral-1.5"},
+    {"id": "glm-5.3-flash", "object": "model", "canonical": "glm-5.3-flash"},
     {"id": ASR_MODEL, "object": "model", "canonical": ASR_MODEL, "type": "audio-transcription"},
 ]
 
 class Router:
     def __init__(self):
         self.current = None
+        self.last_used = {}  # canonical model -> time of last request
         self.lock = threading.Lock()
         # Keep model selection and the corresponding inference atomic. The
         # HTTP server is threaded so health/catalog requests stay responsive,
@@ -84,6 +95,15 @@ class Router:
                 print(f"[Router] Backend for {name} is unreachable; relaunching...")
                 self.current = None
 
+            if self.current is not None and SWAP_GRACE_SEC > 0:
+                idle = time.time() - self.last_used.get(self.current, 0)
+                if idle < SWAP_GRACE_SEC:
+                    wait = int(SWAP_GRACE_SEC - idle) + 1
+                    print(f"[Router] Refusing swap {self.current} -> {name}: in use {idle:.0f}s ago")
+                    return False, {"busy": wait, "message":
+                        f"{self.current} is loaded and in use; {name} can be loaded in {wait}s "
+                        f"(only one chat model fits in memory)"}
+
             print(f"[Router] Swapping to {name}...")
             t0 = time.time()
             try:
@@ -94,11 +114,23 @@ class Router:
                 d = json.loads(r.stdout.strip().split('\n')[-1])
                 if d.get("status") == "ready":
                     self.current = name
+                    self.last_used[name] = time.time()
                     print(f"[Router] Ready in {time.time()-t0:.1f}s")
                     return True, None
                 return False, d.get("message", f"Swap failed: {r.stdout}")
             except Exception as e:
                 return False, str(e)
+
+    @contextlib.contextmanager
+    def in_use(self):
+        """Refresh the active model's last-use time when a served request ends
+        (refused requests must not extend the grace period)."""
+        use = {"served": False}
+        try:
+            yield use
+        finally:
+            if use["served"] and self.current:
+                self.last_used[self.current] = time.time()
 
     def forward(self, path, method, headers, body):
         req = urllib.request.Request(f"http://localhost:{BACKEND_PORT}{path}", data=body, method=method)
@@ -139,7 +171,10 @@ def strip_chatml_sentinels(body):
     return body
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, f, *a): print(f"[{time.strftime('%H:%M:%S')}] {f % a}")
+    def log_message(self, f, *a):
+        src = self.headers.get('X-Forwarded-For', '-') if self.headers else '-'
+        ua = (self.headers.get('User-Agent', '-') if self.headers else '-')[:60]
+        print(f"[{time.strftime('%H:%M:%S')}] {f % a} src={src} ua={ua}")
 
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -246,24 +281,38 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": {"message": str(e)}}).encode())
                 return
-            with router.chat_lock:
+            with router.chat_lock, router.in_use() as use:
                 ok, err = router.ensure(requested)
                 if not ok:
-                    self.send_response(400)
+                    busy = isinstance(err, dict)
+                    self.send_response(503 if busy else 400)
                     self._cors()
                     self.send_header('Content-Type', 'application/json')
+                    if busy:
+                        self.send_header('Retry-After', str(err["busy"]))
                     self.end_headers()
-                    self.wfile.write(json.dumps({"error": {"message": err}}).encode())
+                    msg = err["message"] if busy else err
+                    self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
                     return
+                router.last_used[router.current] = time.time()
+                use["served"] = True
                 # Rewrite the alias to the backend's served model name. vLLM
                 # validates the model field against --served-model-name and 404s
                 # on anything else, so aliases like "qwen"/"flash-next" must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
-                # Normalize OpenAI-style reasoning_effort values the qwen3.8
-                # chat template rejects (it only accepts low/medium/xhigh).
                 effort = data.get('reasoning_effort')
-                if effort is not None:
+                if data['model'] == 'glm-5.3-flash':
+                    # SparkLab reads the GLM budget (low/high/max) only from
+                    # chat_template_kwargs; without it the template thinks at max.
+                    if effort is not None:
+                        kwargs = data.setdefault('chat_template_kwargs', {})
+                        kwargs.setdefault('reasoning_effort', {
+                            'none': 'low', 'minimal': 'low', 'low': 'low', 'medium': 'high',
+                            'high': 'high', 'xhigh': 'max', 'max': 'max'}.get(str(effort).lower(), 'max'))
+                        del data['reasoning_effort']
+                elif effort is not None:
+                    # The qwen3.8 chat template only accepts low/medium/xhigh.
                     mapped = {'none': 'low', 'minimal': 'low', 'high': 'xhigh'}.get(str(effort).lower())
                     if mapped:
                         data['reasoning_effort'] = mapped
@@ -302,8 +351,8 @@ if __name__ == "__main__":
     print("=" * 50)
     print("Multi-Model Router for DGX Spark")
     print("=" * 50)
-    print(f"Models: qwen3.8-flash-next, leanstral-1.5-119b-a6b (chat), {ASR_MODEL} (/v1/audio/transcriptions)")
-    print(f"Aliases: qwen, qwen3.8, qwen3.8-flash, flash-next, leanstral, lean4, proving")
+    print(f"Models: qwen3.8-flash-next, leanstral-1.5-119b-a6b, glm-5.3-flash (chat), {ASR_MODEL} (/v1/audio/transcriptions)")
+    print(f"Aliases: qwen, qwen3.8, qwen3.8-flash, flash-next, leanstral, lean4, proving, glm")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
     print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")

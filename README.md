@@ -10,12 +10,16 @@ instance.
 |---|---|---|---|
 | **`qwen3.8-flash-next`** | `qwen`, `qwen3.8`, `qwen3.8-flash`, `flash-next`, full HF repo ID | vLLM (NVFP4, container `vllm-backend`, port 8001) | 125B/6B-active MoE, 256K context, MTP speculative decoding; cold start ~15 min |
 | **`leanstral-1.5-119b-a6b`** | `leanstral`, `leanstral-1.5`, `lean4`, `proving` | llama.cpp (GGUF NVFP4, port 8001) | Lean 4 proving, tool calls via `chat-templates/leanstral-1.5.jinja`; 128K context; load ~3.6 min. Weights: `Frosty40/Leanstral-1.5-119B-A6B-GGUF-NVFP4` in `~/models` |
+| **`glm-5.3-flash`** | `glm`, `glm-5.3`, `glm5`, full HF repo ID | **SparkLab** native engine (not vLLM), NVMe expert streaming, port 8001 | GLM-5.3-Flash-Uncensored-NVFP4, 320B/18B-active; ~3.5-5 tok/s, 8K context, load ~35 s. See [`sparklab/README.md`](sparklab/README.md) |
 | **`cohere-transcribe`** | | vLLM (NVFP4 W4A16, container `vllm-asr`, port 8002) | `/v1/audio/transcriptions` only; see [`asr/README.md`](asr/README.md) |
 
 An unknown `model` is rejected with `Unknown model: <name>`. A request without
 `model` uses `qwen3.8-flash-next`. Audio requests never swap the chat model.
 
-Only one chat model is loaded at a time; switching between qwen3.8-flash-next
+A loaded chat model that served a request in the last `ROUTER_SWAP_GRACE_SEC`
+(600 s) is not evicted: a request for another chat model gets `503` with
+`Retry-After` instead of a swap, which stops retrying clients from bouncing the
+box between models. Only one chat model is loaded at a time; switching between qwen3.8-flash-next
 and Leanstral 1.5 takes the load time of the target model.
 
 GPT-OSS 120B, Leanstral 2603, Nemotron-3 Super, Gemma-4 and Qwen3.8 27B

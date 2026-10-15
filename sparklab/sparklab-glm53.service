@@ -1,0 +1,20 @@
+[Unit]
+Description=GLM-5.3-Flash-Uncensored-NVFP4 on SparkLab (NVMe expert streaming, port 8001)
+After=network-online.target dgx-router.service
+
+[Service]
+Type=simple
+User=th0rgal
+Group=th0rgal
+Environment=HOME=/home/th0rgal
+EnvironmentFile=/opt/spark/inference/sparklab/glm53.env
+ExecStart=/opt/spark/inference/sparklab/run-glm53.sh
+# Never swap the engine's own pages: exceeding memory fails fast instead of thrashing.
+MemorySwapMax=0
+TimeoutStopSec=60
+Restart=no
+StandardOutput=append:/var/lib/spark/inference/sparklab-glm53.log
+StandardError=append:/var/lib/spark/inference/sparklab-glm53.log
+
+[Install]
+WantedBy=multi-user.target
