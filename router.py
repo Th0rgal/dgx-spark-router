@@ -174,7 +174,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, f, *a):
         src = self.headers.get('X-Forwarded-For', '-') if self.headers else '-'
         ua = (self.headers.get('User-Agent', '-') if self.headers else '-')[:60]
-        print(f"[{time.strftime('%H:%M:%S')}] {f % a} src={src} ua={ua}")
+        model = getattr(self, '_req_model', None)
+        extra = f" model={model}" if model is not None else ""
+        why = getattr(self, '_req_error', None)
+        if why:
+            extra += f" error={why[:80]!r}"
+        print(f"[{time.strftime('%H:%M:%S')}] {f % a} src={src} ua={ua}{extra}")
 
     def _cors(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -275,7 +280,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(body)
                 requested = data.get('model', 'qwen3.8-flash-next')
+                self._req_model = requested
             except json.JSONDecodeError as e:
+                self._req_error = f"invalid JSON: {e}"
                 self.send_response(400)
                 self._cors()
                 self.end_headers()
@@ -285,13 +292,14 @@ class Handler(BaseHTTPRequestHandler):
                 ok, err = router.ensure(requested)
                 if not ok:
                     busy = isinstance(err, dict)
+                    msg = err["message"] if busy else err
+                    self._req_error = msg  # set before send_response, which writes the log line
                     self.send_response(503 if busy else 400)
                     self._cors()
                     self.send_header('Content-Type', 'application/json')
                     if busy:
                         self.send_header('Retry-After', str(err["busy"]))
                     self.end_headers()
-                    msg = err["message"] if busy else err
                     self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
                     return
                 router.last_used[router.current] = time.time()
