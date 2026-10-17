@@ -187,7 +187,8 @@ class Handler(BaseHTTPRequestHandler):
         src = self.headers.get('X-Forwarded-For', '-') if self.headers else '-'
         ua = (self.headers.get('User-Agent', '-') if self.headers else '-')[:60]
         model = getattr(self, '_req_model', None)
-        extra = f" model={model}" if model is not None else ""
+        extra = f" auth={getattr(self, '_auth', '-')}"
+        extra += f" model={model}" if model is not None else ""
         why = getattr(self, '_req_error', None)
         if why:
             extra += f" error={why[:80]!r}"
@@ -205,7 +206,16 @@ class Handler(BaseHTTPRequestHandler):
             return fwd.split(',')[-1].strip(), True
         return self.client_address[0], False
 
+    def _key_state(self):
+        """'key' (valid), 'badkey' or 'nokey', for the access log."""
+        auth = self.headers.get('Authorization', '')
+        key = auth[7:].strip() if auth.lower().startswith('bearer ') else self.headers.get('x-api-key', '').strip()
+        if not key:
+            return 'nokey'
+        return 'key' if any(hmac.compare_digest(key, k) for k in API_KEYS) else 'badkey'
+
     def _authorized(self):
+        self._auth = self._key_state()
         if AUTH_MODE == "off" or self.path.split('?')[0] in OPEN_PATHS:
             return True
         ip, via_proxy = self._peer()
@@ -217,9 +227,7 @@ class Handler(BaseHTTPRequestHandler):
             return True  # local process on the Spark
         if AUTH_MODE == "external" and addr is not None and any(addr in n for n in _TAILNET):
             return True
-        auth = self.headers.get('Authorization', '')
-        key = auth[7:].strip() if auth.lower().startswith('bearer ') else self.headers.get('x-api-key', '').strip()
-        return bool(key) and any(hmac.compare_digest(key, k) for k in API_KEYS)
+        return self._auth == 'key'
 
     def _reject(self):
         self._req_error = "missing or invalid API key"
