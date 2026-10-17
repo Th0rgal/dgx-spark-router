@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Multi-Model OpenAI-Compatible Router for DGX Spark"""
-import contextlib, os, json, subprocess, time, threading
+import contextlib, hmac, ipaddress, os, json, subprocess, time, threading
 from gpu_idle import Foreground, router_heartbeat
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request, urllib.error
@@ -16,6 +16,18 @@ ASR_MODEL = "cohere-transcribe"
 # clients of different models (or one retrying client) make the router swap
 # back and forth, and every swap to qwen3.8-flash-next costs ~15 min.
 SWAP_GRACE_SEC = int(os.environ.get("ROUTER_SWAP_GRACE_SEC", "600"))
+
+# API keys (Authorization: Bearer <key> or x-api-key). ROUTER_AUTH:
+#   external - required for clients outside the tailnet (Tailscale Funnel)
+#   all      - required for everyone except local processes on the Spark
+#   off      - no authentication
+# Requests through `tailscale serve`/Funnel carry X-Forwarded-For with the real
+# peer (tailscaled overwrites client values; the last entry is trusted anyway).
+# Direct loopback connections without it are local processes.
+API_KEYS = [k.strip() for k in os.environ.get("ROUTER_API_KEYS", "").split(",") if k.strip()]
+AUTH_MODE = os.environ.get("ROUTER_AUTH", "external" if API_KEYS else "off")
+OPEN_PATHS = {"/health"}
+_TAILNET = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 ROUTER_PORT = 8000
 
 CHATML_STOP_SEQUENCES = (
@@ -186,12 +198,55 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', '*')
 
+    def _peer(self):
+        """(ip, via_proxy): the real client address and whether it came through tailscale serve."""
+        fwd = self.headers.get('X-Forwarded-For')
+        if fwd:
+            return fwd.split(',')[-1].strip(), True
+        return self.client_address[0], False
+
+    def _authorized(self):
+        if AUTH_MODE == "off" or self.path.split('?')[0] in OPEN_PATHS:
+            return True
+        ip, via_proxy = self._peer()
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            addr = None
+        if addr is not None and addr.is_loopback and not via_proxy:
+            return True  # local process on the Spark
+        if AUTH_MODE == "external" and addr is not None and any(addr in n for n in _TAILNET):
+            return True
+        auth = self.headers.get('Authorization', '')
+        key = auth[7:].strip() if auth.lower().startswith('bearer ') else self.headers.get('x-api-key', '').strip()
+        return bool(key) and any(hmac.compare_digest(key, k) for k in API_KEYS)
+
+    def _reject(self):
+        self._req_error = "missing or invalid API key"
+        body = json.dumps({"error": {"message": "Missing or invalid API key. Send Authorization: Bearer <key>.",
+                                     "type": "invalid_request_error", "code": "invalid_api_key"}}).encode()
+        self.send_response(401)
+        self._cors()
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('WWW-Authenticate', 'Bearer')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_HEAD(self):
+        if not self._authorized():
+            return self._reject()
+        self.send_response(200)
+        self.end_headers()
+
     def do_OPTIONS(self):
         self.send_response(200)
         self._cors()
         self.end_headers()
 
     def do_GET(self):
+        if not self._authorized():
+            return self._reject()
         if self.path == '/v1/models':
             data = {"object": "list", "data": [
                 {**m, "active": router.current == m["canonical"]} for m in MODEL_INFO
@@ -264,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
     def do_POST(self):
+        if not self._authorized():
+            return self._reject()
         try:
             with Foreground():
                 if self.path.startswith('/v1/audio/'):
