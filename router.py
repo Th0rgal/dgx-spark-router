@@ -16,6 +16,10 @@ ASR_MODEL = "cohere-transcribe"
 # clients of different models (or one retrying client) make the router swap
 # back and forth, and every swap to qwen3.8-flash-next costs ~15 min.
 SWAP_GRACE_SEC = int(os.environ.get("ROUTER_SWAP_GRACE_SEC", "600"))
+# Default reasoning_effort injected for reasoning models when the client
+# sends none (empty = leave as-is). Keeps visible content from being eaten
+# by the hidden think block on small token budgets.
+DEFAULT_EFFORT = os.environ.get("ROUTER_DEFAULT_EFFORT", "low").strip().lower() or None
 
 # API keys (Authorization: Bearer <key> or x-api-key). ROUTER_AUTH:
 #   external - required for clients outside the tailnet (Tailscale Funnel)
@@ -188,6 +192,9 @@ class Handler(BaseHTTPRequestHandler):
         ua = (self.headers.get('User-Agent', '-') if self.headers else '-')[:60]
         model = getattr(self, '_req_model', None)
         extra = f" auth={getattr(self, '_auth', '-')}"
+        dbg = getattr(self, '_req_dbg', None)
+        if dbg:
+            extra += " " + dbg
         extra += f" model={model}" if model is not None else ""
         why = getattr(self, '_req_error', None)
         if why:
@@ -346,6 +353,14 @@ class Handler(BaseHTTPRequestHandler):
                 data = json.loads(body)
                 requested = data.get('model', 'qwen3.8-flash-next')
                 self._req_model = requested
+                try:
+                    _msgs = data.get('messages') or []
+                    self._req_dbg = ("mt=%s stream=%s effort=%s n_msgs=%d last_len=%d" % (
+                        data.get('max_tokens'), bool(data.get('stream')),
+                        data.get('reasoning_effort') or (data.get('chat_template_kwargs') or {}).get('reasoning_effort'),
+                        len(_msgs), len(str((_msgs[-1].get('content') if _msgs else '') or ''))))
+                except Exception:
+                    pass
             except json.JSONDecodeError as e:
                 self._req_error = f"invalid JSON: {e}"
                 self.send_response(400)
@@ -374,7 +389,16 @@ class Handler(BaseHTTPRequestHandler):
                 # on anything else, so aliases like "qwen"/"flash-next" must become
                 # the canonical id before forwarding. (llama.cpp ignores it.)
                 data['model'] = router.resolve(requested)
+                # qwen3.8-flash-next and glm-5.3-flash are reasoning models: they
+                # open a hidden <think> block. With no effort set they think at the
+                # top budget, so a request with a small max_tokens spends it all on
+                # reasoning and returns EMPTY content (finish_reason=length). Default
+                # to DEFAULT_EFFORT (low) when the client sends none, matching Orb's
+                # own Ask client. An explicit reasoning_effort still wins.
                 effort = data.get('reasoning_effort')
+                if effort is None and DEFAULT_EFFORT and \
+                        not (data.get('chat_template_kwargs') or {}).get('reasoning_effort'):
+                    effort = DEFAULT_EFFORT
                 if data['model'] == 'glm-5.3-flash':
                     # SparkLab reads the GLM budget (low/high/max) only from
                     # chat_template_kwargs; without it the template thinks at max.
@@ -383,12 +407,11 @@ class Handler(BaseHTTPRequestHandler):
                         kwargs.setdefault('reasoning_effort', {
                             'none': 'low', 'minimal': 'low', 'low': 'low', 'medium': 'high',
                             'high': 'high', 'xhigh': 'max', 'max': 'max'}.get(str(effort).lower(), 'max'))
-                        del data['reasoning_effort']
-                elif effort is not None:
+                        data.pop('reasoning_effort', None)
+                elif data['model'] == 'qwen3.8-flash-next' and effort is not None:
                     # The qwen3.8 chat template only accepts low/medium/xhigh.
-                    mapped = {'none': 'low', 'minimal': 'low', 'high': 'xhigh'}.get(str(effort).lower())
-                    if mapped:
-                        data['reasoning_effort'] = mapped
+                    data['reasoning_effort'] = {'none': 'low', 'minimal': 'low',
+                        'high': 'xhigh'}.get(str(effort).lower(), str(effort).lower())
                 body = json.dumps(data).encode()
                 if data.get('stream'):
                     try:
