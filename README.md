@@ -100,6 +100,10 @@ aliases to `MODELS`, `VALID_MODELS` and `MODEL_INFO` in `router.py`.
 - `chat-templates/leanstral-1.5.jinja`: Mistral's official template (the GGUF has none)
 - `asr/`: Cohere Transcribe NVFP4 service
 - `benchmark.py`, `router.service`
+- `spark-daemon/`: Formally verified pure-Lean native router & GPU arbitration daemon (`0 import Lean`, `0 sorryAx`, `supportInterpreter := false`, built on `Th0rgal/lean-sys` `relayHttpStream` + `leansys_verify_stream_relay`):
+  - `Spark/Kernel.lean`: Scalar `LNIR`->LLVM gates (`spark_gpu_permit_gate`, `spark_swap_admit`, `spark_swap_retry_after_sec`, `spark_prefill_budget_ms`, `spark_auth_gate`).
+  - `Spark/Spec.lean`: `6/6` `non_vacuous_and_tight` proofs audited by `turbo-lean --json audit-spec`.
+  - `Spark/Main.lean`: Native HTTP/SSE splice (`spark-daemon serve` / `spark-daemon self-test`).
 
 ## License
 
