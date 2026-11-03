@@ -926,7 +926,18 @@ class Handler(BaseHTTPRequestHandler):
 
                             at_boundary = True
                             while True:
-                                buffered = getattr(upstream.fp, "peek", lambda _n=0: b"")(1)
+                                # Check BufferedReader's internal buffer without blocking on the socket:
+                                # vLLM flushes HTTP 200 chunked headers immediately before prefill, so a
+                                # blocking peek(1) here would stall through the entire 35-60s prefill
+                                # without emitting SSE keepalives.
+                                buffered = False
+                                if conn.sock is not None and upstream.fp is not None:
+                                    conn.sock.setblocking(False)
+                                    try:
+                                        with contextlib.suppress(BlockingIOError):
+                                            buffered = bool(upstream.fp.peek(1))
+                                    finally:
+                                        conn.sock.setblocking(True)
                                 if not buffered:
                                     rlist, _, _ = select.select([conn.sock], [], [], SSE_KEEPALIVE_SEC)
                                     if not rlist:
