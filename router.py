@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Multi-Model OpenAI-Compatible Router for DGX Spark"""
-import contextlib, hmac, ipaddress, os, json, subprocess, time, threading
+import contextlib, hmac, ipaddress, os, json, subprocess, tempfile, time, threading, uuid
+from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default as _email_default_policy
+from pathlib import Path
 from gpu_idle import Foreground, router_heartbeat
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import urllib.request, urllib.error
@@ -11,6 +15,15 @@ BACKEND_PORT = 8001
 # the shared GPU foreground lock like chat requests (pauses vanity, not qwen).
 ASR_PORT = 8002
 ASR_MODEL = "cohere-transcribe"
+ASR_MAX_CONCURRENCY = int(os.environ.get("ROUTER_ASR_MAX_CONCURRENCY", "2"))
+ASR_MAX_RETRIES = int(os.environ.get("ROUTER_ASR_MAX_RETRIES", "3"))
+ASR_HEALTH_WAIT_SEC = int(os.environ.get("ROUTER_ASR_HEALTH_WAIT_SEC", "150"))
+ASR_SEMAPHORE = threading.BoundedSemaphore(max(1, ASR_MAX_CONCURRENCY))
+MEMORY_GATEWAY_URL = os.environ.get("SPARK_MEMORY_GATEWAY_URL", "http://127.0.0.1:8890").rstrip("/")
+MEMORY_TOKEN_FILE = os.environ.get("SPARK_MEMORY_TOKEN_FILE", "/etc/spark/memory/token")
+VOICE_SPOOL_DIR = os.environ.get("SPARK_VOICE_SPOOL_DIR", "/var/lib/spark/voice-spool")
+VOICE_CAPTURE_ENABLED = os.environ.get("SPARK_VOICE_CAPTURE_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+VOICE_EXCLUDED_SOURCES = {"ppl-lecture", "ppl", "aecp", "healthcheck", "synthetic-test"}
 # A chat model that served a request within SWAP_GRACE_SEC is not evicted for
 # another one; that request gets 503 + Retry-After instead. Without this, two
 # clients of different models (or one retrying client) make the router swap
@@ -31,7 +44,9 @@ DEFAULT_EFFORT = os.environ.get("ROUTER_DEFAULT_EFFORT", "low").strip().lower() 
 API_KEYS = [k.strip() for k in os.environ.get("ROUTER_API_KEYS", "").split(",") if k.strip()]
 AUTH_MODE = os.environ.get("ROUTER_AUTH", "external" if API_KEYS else "off")
 OPEN_PATHS = {"/health"}
-_TAILNET = (ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
+# Trusted peers that may call without an API key under ROUTER_AUTH=external:
+# the lean-mesh WireGuard subnet (10.88.0.0/16) and the legacy Tailscale CGNAT ranges.
+_TAILNET = (ipaddress.ip_network("10.88.0.0/16"), ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48"))
 ROUTER_PORT = 8000
 
 CHATML_STOP_SEQUENCES = (
@@ -181,6 +196,136 @@ class Router:
 
 router = Router()
 
+
+def _read_memory_api_token():
+    tok = os.environ.get("MEMORY_API_TOKEN", "").strip()
+    if tok:
+        return tok
+    try:
+        return Path(MEMORY_TOKEN_FILE).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _parse_audio_multipart(content_type, body_bytes):
+    """Extract audio bytes, filename, mime_type, and form fields from multipart/form-data."""
+    if not content_type or "multipart/form-data" not in content_type.lower():
+        return None
+    try:
+        header_bytes = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("latin-1", errors="ignore")
+        msg = BytesParser(policy=_email_default_policy).parsebytes(header_bytes + body_bytes)
+        if not msg.is_multipart():
+            return None
+        fields = {}
+        file_info = None
+        for part in msg.iter_parts():
+            disp = part.get_content_disposition()
+            if disp != "form-data":
+                continue
+            name = part.get_param("name", header="content-disposition")
+            filename = part.get_filename()
+            payload = part.get_payload(decode=True) or b""
+            if name == "file" or filename is not None:
+                if file_info is None:
+                    file_info = {
+                        "audio_bytes": payload,
+                        "filename": filename or "audio.wav",
+                        "mime_type": part.get_content_type() or "application/octet-stream",
+                    }
+            elif name:
+                fields[name] = payload.decode("utf-8", errors="replace").strip()
+        if file_info is None or not file_info["audio_bytes"]:
+            return None
+        file_info["fields"] = fields
+        return file_info
+    except Exception as exc:
+        print(f"[Router] Multipart parse warning: {exc}")
+        return None
+
+
+def _spool_voice_request(audio_bytes, meta):
+    """Persist raw audio + metadata to shared spool before ASR (Raw-First)."""
+    req_id = meta["request_id"]
+    ext = Path(meta.get("original_filename") or "audio.wav").suffix.lower()
+    if not ext or len(ext) > 10 or not ext.startswith("."):
+        ext = ".bin"
+    spool = Path(VOICE_SPOOL_DIR)
+    try:
+        spool.mkdir(parents=True, exist_ok=True)
+        audio_name = f"{req_id}{ext}"
+        audio_tmp = spool / f".{audio_name}.tmp"
+        audio_final = spool / audio_name
+        audio_tmp.write_bytes(audio_bytes)
+        os.replace(audio_tmp, audio_final)
+        meta_copy = {**meta, "audio_file": audio_name}
+        meta_tmp = spool / f".{req_id}.json.tmp"
+        meta_final = spool / f"{req_id}.json"
+        meta_tmp.write_text(json.dumps(meta_copy, ensure_ascii=False), encoding="utf-8")
+        os.replace(meta_tmp, meta_final)
+        return audio_final, meta_final
+    except Exception as exc:
+        print(f"[Router] Voice spool write warning ({req_id}): {exc}")
+        return None, None
+
+
+def _ship_voice_to_memory_async(audio_bytes, meta, spool_audio, spool_meta):
+    def _worker():
+        tok = _read_memory_api_token()
+        if not tok:
+            print(f"[Router] MEMORY_API_TOKEN unavailable; keeping {meta['request_id']} in spool")
+            return
+        boundary = f"sparkvoice{uuid.uuid4().hex}"
+        parts = []
+        meta_bytes = json.dumps(meta, ensure_ascii=False).encode("utf-8")
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="metadata_json"\r\n\r\n'.encode("utf-8")
+            + meta_bytes
+            + b"\r\n"
+        )
+        fname = (meta.get("original_filename") or "audio.wav").replace('"', "_")
+        mtype = meta.get("mime_type") or "application/octet-stream"
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{fname}"\r\nContent-Type: {mtype}\r\n\r\n'.encode("utf-8")
+            + audio_bytes
+            + b"\r\n"
+            + f"--{boundary}--\r\n".encode("utf-8")
+        )
+        body = b"".join(parts)
+        req = urllib.request.Request(
+            f"{MEMORY_GATEWAY_URL}/api/voice/ingest",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {tok}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                if 200 <= resp.status < 300:
+                    if spool_meta is not None:
+                        Path(spool_meta).unlink(missing_ok=True)
+                    if spool_audio is not None:
+                        Path(spool_audio).unlink(missing_ok=True)
+                    return
+        except Exception as exc:
+            print(f"[Router] Voice ingest handoff deferred to spool ({meta['request_id']}): {exc}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _wait_for_asr_healthy(timeout_sec=ASR_HEALTH_WAIT_SEC):
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{ASR_PORT}/health", timeout=3) as r:
+                if 200 <= r.status < 300:
+                    return True
+        except Exception:
+            pass
+        time.sleep(2.0)
+    return False
+
 def strip_chatml_sentinels(body):
     for sentinel in CHATML_STOP_SEQUENCES:
         body = body.replace(sentinel.encode(), b"")
@@ -286,52 +431,221 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b)
 
     def _proxy_audio(self):
-        """Stream /v1/audio/* to the ASR backend: request body and (SSE)
-        response are forwarded in chunks without buffering."""
+        """Forward /v1/audio/* to vllm-asr with temp-file replay on 5xx/restart,
+        concurrency gating, PPL exclusion, and Raw-First personal voice capture."""
         import http.client
+
+        t0 = time.perf_counter()
         length = int(self.headers.get('Content-Length', 0))
+        content_type = self.headers.get('Content-Type', '')
+        audio_source = (self.headers.get('X-Spark-Audio-Source') or '').strip().lower()
+        opt_out = (self.headers.get('X-Spark-Voice-Capture') or '').strip().lower() in ('0', 'false', 'off', 'no')
+        is_private_hdr = (self.headers.get('X-Spark-Voice-Private') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+        client_ip, _ = self._peer()
+        ua = (self.headers.get('User-Agent') or '')[:240]
+        self._req_model = ASR_MODEL
+
+        req_tmp = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode='w+b')
         try:
-            conn = http.client.HTTPConnection('127.0.0.1', ASR_PORT, timeout=600)
-            conn.putrequest('POST', self.path, skip_accept_encoding=True)
-            for k, v in self.headers.items():
-                if k.lower() not in ('host', 'connection', 'transfer-encoding'):
-                    conn.putheader(k, v)
-            conn.endheaders()
             left = length
             while left > 0:
                 chunk = self.rfile.read(min(65536, left))
                 if not chunk:
                     break
-                conn.send(chunk)
+                req_tmp.write(chunk)
                 left -= len(chunk)
-            r = conn.getresponse()
-        except OSError as e:
-            self.send_response(503)
-            self._cors()
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps({"error": {"message": f"transcription backend unavailable: {e}"}}).encode())
-            return
-        try:
-            self.send_response(r.status)
-            self._cors()
-            self.send_header('Content-Type', r.getheader('Content-Type', 'application/json'))
-            if 'text/event-stream' in (r.getheader('Content-Type') or ''):
-                self.send_header('Cache-Control', 'no-cache')
-            else:
+            actual_len = req_tmp.tell()
+
+            should_capture = (
+                VOICE_CAPTURE_ENABLED
+                and not opt_out
+                and audio_source not in VOICE_EXCLUDED_SOURCES
+                and self.path.split('?')[0].rstrip('/') == '/v1/audio/transcriptions'
+                and actual_len > 0
+                and actual_len <= 50 * 1024 * 1024
+            )
+
+            parsed_mp = None
+            req_id = f"vreq-{uuid.uuid4().hex[:16]}"
+            created_iso = datetime.now(timezone.utc).isoformat()
+            spool_audio = None
+            spool_meta = None
+            base_meta = None
+
+            if should_capture:
+                req_tmp.seek(0)
+                raw_req_bytes = req_tmp.read()
+                parsed_mp = _parse_audio_multipart(content_type, raw_req_bytes)
+                if parsed_mp is not None:
+                    fields = parsed_mp.get("fields") or {}
+                    req_lang = fields.get("language")
+                    base_meta = {
+                        "request_id": req_id,
+                        "original_filename": parsed_mp["filename"],
+                        "mime_type": parsed_mp["mime_type"],
+                        "requested_language": req_lang if req_lang else None,
+                        "detected_language": None,
+                        "language_source": "auto" if (not req_lang or req_lang.lower() == "auto") else "explicit",
+                        "request_prompt": fields.get("prompt", ""),
+                        "hotwords": fields.get("hotwords", ""),
+                        "model": fields.get("model") or ASR_MODEL,
+                        "initial_transcript": "",
+                        "client_source": audio_source or "personal-voice",
+                        "user_agent": ua,
+                        "client_ip": client_ip,
+                        "status_code": 0,
+                        "latency_ms": 0.0,
+                        "is_private": is_private_hdr,
+                        "created_at": created_iso,
+                        "metadata": {"response_format": fields.get("response_format", "json")},
+                    }
+                    # Raw-First: persist to disk spool BEFORE calling vllm-asr
+                    spool_audio, spool_meta = _spool_voice_request(parsed_mp["audio_bytes"], base_meta)
+
+            conn = None
+            r = None
+            err_body = None
+            last_exc = None
+
+            with ASR_SEMAPHORE:
+                for attempt in range(ASR_MAX_RETRIES):
+                    if conn is not None:
+                        with contextlib.suppress(Exception):
+                            conn.close()
+                        conn = None
+                    try:
+                        req_tmp.seek(0)
+                        conn = http.client.HTTPConnection('127.0.0.1', ASR_PORT, timeout=600)
+                        conn.putrequest('POST', self.path, skip_accept_encoding=True)
+                        for k, v in self.headers.items():
+                            if k.lower() not in ('host', 'connection', 'transfer-encoding', 'content-length'):
+                                conn.putheader(k, v)
+                        conn.putheader('Content-Length', str(actual_len))
+                        conn.endheaders()
+                        while True:
+                            buf = req_tmp.read(65536)
+                            if not buf:
+                                break
+                            conn.send(buf)
+                        r = conn.getresponse()
+                        if r.status in (500, 502, 503, 504) and attempt + 1 < ASR_MAX_RETRIES:
+                            err_body = r.read()
+                            print(f"[Router] ASR returned {r.status} on attempt {attempt + 1}/{ASR_MAX_RETRIES}; waiting for healthy :8002...")
+                            conn.close()
+                            conn = None
+                            r = None
+                            time.sleep(1.5)
+                            _wait_for_asr_healthy()
+                            continue
+                        break
+                    except OSError as e:
+                        last_exc = e
+                        if conn is not None:
+                            with contextlib.suppress(Exception):
+                                conn.close()
+                            conn = None
+                        if attempt + 1 < ASR_MAX_RETRIES:
+                            print(f"[Router] ASR transport error ({e}) on attempt {attempt + 1}/{ASR_MAX_RETRIES}; waiting for healthy :8002...")
+                            time.sleep(1.5)
+                            _wait_for_asr_healthy()
+                            continue
+
+            if r is None:
+                self._req_error = f"asr unavailable: {last_exc or err_body}"
+                self.send_response(503)
+                self._cors()
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                msg = f"transcription backend unavailable: {last_exc}" if last_exc else "transcription backend failed after retries"
+                self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
+                return
+
+            try:
+                resp_ctype = r.getheader('Content-Type', 'application/json')
+                detected_lang = r.getheader('X-Spark-Detected-Language')
+                lang_source = r.getheader('X-Spark-Language-Source')
+                dur_hdr = r.getheader('X-Spark-Audio-Duration-Seconds')
+                self._req_dbg = f"src={audio_source or 'voice'} lang={detected_lang or '-'}"
+
+                self.send_response(r.status)
+                self._cors()
+                self.send_header('Content-Type', resp_ctype)
+                if detected_lang:
+                    self.send_header('X-Spark-Detected-Language', detected_lang)
+                if lang_source:
+                    self.send_header('X-Spark-Language-Source', lang_source)
+
+                if 'text/event-stream' in (resp_ctype or ''):
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    sse_chunks = []
+                    while chunk := r.read1(8192):
+                        if base_meta is not None and len(sse_chunks) < 256:
+                            sse_chunks.append(chunk)
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                    if base_meta is not None and parsed_mp is not None:
+                        transcript_parts = []
+                        for raw_line in b"".join(sse_chunks).decode("utf-8", errors="ignore").splitlines():
+                            if raw_line.startswith("data: ") and raw_line[6:].strip() != "[DONE]":
+                                with contextlib.suppress(Exception):
+                                    ev = json.loads(raw_line[6:])
+                                    for ch in ev.get("choices") or []:
+                                        delta = (ch.get("delta") or {}).get("content")
+                                        if delta:
+                                            transcript_parts.append(delta)
+                        base_meta["initial_transcript"] = "".join(transcript_parts).strip()
+                        base_meta["status_code"] = r.status
+                        base_meta["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
+                        if detected_lang:
+                            base_meta["detected_language"] = detected_lang
+                        if lang_source:
+                            base_meta["language_source"] = lang_source
+                        if dur_hdr:
+                            with contextlib.suppress(ValueError):
+                                base_meta["duration_seconds"] = float(dur_hdr)
+                        spool_audio, spool_meta = _spool_voice_request(parsed_mp["audio_bytes"], base_meta)
+                        _ship_voice_to_memory_async(parsed_mp["audio_bytes"], base_meta, spool_audio, spool_meta)
+                    return
+
                 body = r.read()
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-                return
-            self.end_headers()
-            while chunk := r.read1(8192):
-                self.wfile.write(chunk)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+
+                if base_meta is not None and parsed_mp is not None:
+                    transcript_txt = ""
+                    if 'application/json' in (resp_ctype or '').lower():
+                        with contextlib.suppress(Exception):
+                            payload = json.loads(body.decode("utf-8", errors="replace"))
+                            transcript_txt = str(payload.get("text") or "").strip()
+                            if not detected_lang and payload.get("language"):
+                                detected_lang = str(payload.get("language"))
+                            if not dur_hdr and isinstance(payload.get("usage"), dict):
+                                sec = payload["usage"].get("seconds")
+                                if sec is not None:
+                                    dur_hdr = str(sec)
+                    else:
+                        transcript_txt = body.decode("utf-8", errors="replace").strip()
+
+                    base_meta["initial_transcript"] = transcript_txt
+                    base_meta["status_code"] = r.status
+                    base_meta["latency_ms"] = round((time.perf_counter() - t0) * 1000.0, 2)
+                    base_meta["detected_language"] = detected_lang or base_meta.get("requested_language")
+                    if lang_source:
+                        base_meta["language_source"] = lang_source
+                    if dur_hdr:
+                        with contextlib.suppress(ValueError):
+                            base_meta["duration_seconds"] = float(dur_hdr)
+                    spool_audio, spool_meta = _spool_voice_request(parsed_mp["audio_bytes"], base_meta)
+                    _ship_voice_to_memory_async(parsed_mp["audio_bytes"], base_meta, spool_audio, spool_meta)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                if conn is not None:
+                    conn.close()
         finally:
-            conn.close()
+            req_tmp.close()
 
     def do_POST(self):
         if not self._authorized():
@@ -451,7 +765,7 @@ if __name__ == "__main__":
     print(f"Aliases: qwen, qwen3.8, qwen3.8-flash, flash-next, leanstral, lean4, proving, glm")
     print(f"Current: {router.current}")
     print(f"Listening: http://0.0.0.0:{ROUTER_PORT}")
-    print(f"Public: https://spark-de79.gazella-vector.ts.net/v1/chat/completions")
+    print(f"Mesh: http://10.88.0.2:{ROUTER_PORT}/v1/chat/completions")
     print("=" * 50)
     router_heartbeat()
     ThreadingHTTPServer(('0.0.0.0', ROUTER_PORT), Handler).serve_forever()

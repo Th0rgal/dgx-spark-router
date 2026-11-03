@@ -11,9 +11,14 @@
   attention and norm tensors do not match the official model (cos sim ~0).
 - `cohere_asr.py` is vLLM's model file, patched (mounted read-only over the
   image's copy): encoder Linear layers take quant_config (NVFP4 Marlin),
-  LM head forced bf16, dtype fixes for the rel-pos attention.
-- Router (/opt/spark/inference/router.py) forwards /v1/audio/* to :8002,
-  streaming request and SSE response, under the GPU foreground lock.
-  Public: https://spark-de79.gazella-vector.ts.net/v1/audio/transcriptions
+  LM head forced bf16, contiguous fp32 rel-pos attention (avoiding GB10 cuBLAS
+  BF16 strided GEMM faults), FR/EN language auto-detection, and
+  `X-Spark-Detected-Language` / `X-Spark-Audio-Duration-Seconds` headers.
+- Router (`/opt/spark/inference/router.py`) forwards `/v1/audio/*` to `:8002`
+  under the GPU foreground lock and `ASR_SEMAPHORE` (concurrency 2, temp-file
+  replay on 5xx/restart), with Raw-First personal voice spooling to
+  `/var/lib/spark/voice-spool` (`spark-memory` `:8890/api/voice/ingest`,
+  excluding PPL/healthcheck sources or `X-Spark-Voice-Capture: 0`).
+  Mesh endpoint: `http://10.88.0.2:8000/v1/audio/transcriptions`
 - qwen3.8-flash-next KV cache lowered 16 -> 10 GiB in vllm-registry.sh to make room.
 - Benchmark: `python3 bench.py http://127.0.0.1:8000 <label>` (needs refs.json + audio/).

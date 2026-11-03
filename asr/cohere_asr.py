@@ -5,6 +5,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, ClassVar
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -1067,17 +1068,19 @@ class CohereASRMultiHeadAttention(nn.Module):
                 attention scores
         """
         n_batch = value.size(0)
+        out_dtype = value.dtype
+        scores_f32 = scores.float()
         if mask is not None:
             mask = mask.unsqueeze(1)  # (batch, 1, time1, time2)
-            scores = scores.masked_fill(mask, -INF_VAL)
-            attn = torch.softmax(scores, dim=-1).masked_fill(
+            scores_f32 = scores_f32.masked_fill(mask, -INF_VAL)
+            attn = torch.softmax(scores_f32, dim=-1).masked_fill(
                 mask, 0.0
             )  # (batch, head, time1, time2)
         else:
-            attn = torch.softmax(scores, dim=-1)  # (batch, head, time1, time2)
+            attn = torch.softmax(scores_f32, dim=-1)  # (batch, head, time1, time2)
 
-        x = torch.matmul(attn, value)  # (batch, head, time1, d_k)
-        x = x.transpose(1, 2).reshape(
+        x = torch.matmul(attn.contiguous(), value.float().contiguous()).to(out_dtype)  # (batch, head, time1, d_k)
+        x = x.transpose(1, 2).contiguous().reshape(
             n_batch, -1, self.h * self.d_k
         )  # (batch, time1, d_model)
 
@@ -1105,7 +1108,9 @@ class CohereASRMultiHeadAttention(nn.Module):
         """
         q, k, v = self.forward_qkv(query, key, value)
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / self.s_d_k
+        scores = torch.matmul(
+            q.float().contiguous(), k.transpose(-2, -1).float().contiguous()
+        ) / self.s_d_k
         return self.forward_attention(v, scores, mask)
 
 
@@ -1192,24 +1197,21 @@ class RelPositionMultiHeadAttention(CohereASRMultiHeadAttention):
         p = self.linear_pos(pos_emb).view(n_batch_pos, -1, self.h, self.d_k)
         p = p.transpose(1, 2)  # (batch, head, time1, d_k)
 
+        q_f32 = q.float()
         # (batch, head, time1, d_k)
-        q_with_bias_u = (q + self.pos_bias_u.to(q.dtype)).transpose(1, 2)
+        q_with_bias_u = (q_f32 + self.pos_bias_u.float()).transpose(1, 2).contiguous()
         # (batch, head, time1, d_k)
-        q_with_bias_v = (q + self.pos_bias_v.to(q.dtype)).transpose(1, 2)
-        p = p.to(q.dtype)
+        q_with_bias_v = (q_f32 + self.pos_bias_v.float()).transpose(1, 2).contiguous()
+        p_t = p.float().transpose(-2, -1).contiguous()
+        k_t = k.float().transpose(-2, -1).contiguous()
 
-        # compute attention score
-        # first compute matrix a and matrix c
-        # as described in https://arxiv.org/abs/1901.02860 Section 3.3
-        # (batch, head, time1, time2)
-
-        # compute matrix b and matrix d
-        # (batch, head, time1, time2)
-        matrix_bd = torch.matmul(q_with_bias_v, p.transpose(-2, -1))
-        matrix_bd = self.rel_shift(matrix_bd)
+        # compute attention score in fp32 with contiguous operands to avoid
+        # GB10 cuBLAS BF16 strided batched GEMM faults under unified-memory pressure
+        matrix_bd = torch.matmul(q_with_bias_v, p_t)
+        matrix_bd = self.rel_shift(matrix_bd.contiguous())
 
         # drops extra elements in the matrix_bd to match the matrix_ac's size
-        matrix_ac = torch.matmul(q_with_bias_u, k.transpose(-2, -1))
+        matrix_ac = torch.matmul(q_with_bias_u, k_t)
         matrix_bd = matrix_bd[:, :, :, : matrix_ac.size(-1)]
         scores = (matrix_ac + matrix_bd) / self.s_d_k  # (batch, head, time1, time2)
         return self.forward_attention(v, scores, mask)
@@ -2022,6 +2024,80 @@ class CohereASRMultiModalProcessor(EncDecMultiModalProcessor[CohereASRProcessing
         ]
 
 
+# Upstream vLLM SpeechToTextBaseServing._detect_language accesses self.tokenizer,
+# which upstream only sets when supports_segment_timestamp is True. Provide a
+# lazy property fallback and surface resolved/detected language + audio duration
+# via HTTP response headers for downstream corpus logging without breaking the
+# strict OpenAI TranscriptionResponse JSON schema.
+try:
+    from vllm.entrypoints.speech_to_text.base.serving import SpeechToTextBaseServing as _STTBaseServing
+    from vllm.entrypoints.speech_to_text.transcription import api_router as _stt_api_router
+    from vllm.tokenizers import get_tokenizer as _get_vllm_tokenizer
+
+    if not hasattr(_STTBaseServing, "tokenizer"):
+        def _get_stt_tokenizer(self):
+            tok = self.__dict__.get("_cached_stt_tokenizer")
+            if tok is None:
+                tok = _get_vllm_tokenizer(
+                    tokenizer_name=self.model_config.tokenizer,
+                    tokenizer_mode=self.model_config.tokenizer_mode,
+                    trust_remote_code=self.model_config.trust_remote_code,
+                )
+                self.__dict__["_cached_stt_tokenizer"] = tok
+            return tok
+
+        def _set_stt_tokenizer(self, value):
+            self.__dict__["_cached_stt_tokenizer"] = value
+
+        _STTBaseServing.tokenizer = property(_get_stt_tokenizer, _set_stt_tokenizer)
+
+    if not getattr(_STTBaseServing, "_spark_meta_patched", False):
+        _orig_preprocess_stt = _STTBaseServing._preprocess_speech_to_text
+
+        async def _patched_preprocess_stt(self, request, audio_data, request_id):
+            raw_lang = getattr(request, "language", None)
+            was_auto = raw_lang is None or str(raw_lang).strip().lower() in ("", "auto")
+            engine_inputs, duration, offsets = await _orig_preprocess_stt(
+                self, request, audio_data, request_id
+            )
+            request.__dict__["_spark_was_auto_lang"] = was_auto
+            request.__dict__["_spark_resolved_lang"] = getattr(request, "language", None)
+            request.__dict__["_spark_duration_s"] = float(duration)
+            return engine_inputs, duration, offsets
+
+        _STTBaseServing._preprocess_speech_to_text = _patched_preprocess_stt
+        _STTBaseServing._spark_meta_patched = True
+
+    if not getattr(_stt_api_router, "_spark_headers_patched", False):
+        _OrigJSONResponse = _stt_api_router.JSONResponse
+
+        def _SparkJSONResponse(*args, **kwargs):
+            resp = _OrigJSONResponse(*args, **kwargs)
+            try:
+                import inspect
+                frame = inspect.currentframe()
+                caller = frame.f_back if frame is not None else None
+                req_obj = caller.f_locals.get("request") if caller is not None else None
+                if req_obj is not None:
+                    lang = req_obj.__dict__.get("_spark_resolved_lang") or getattr(req_obj, "language", None)
+                    was_auto = req_obj.__dict__.get("_spark_was_auto_lang")
+                    dur = req_obj.__dict__.get("_spark_duration_s")
+                    if lang:
+                        resp.headers["X-Spark-Detected-Language"] = str(lang)
+                    if was_auto is not None:
+                        resp.headers["X-Spark-Language-Source"] = "auto" if was_auto else "explicit"
+                    if dur is not None:
+                        resp.headers["X-Spark-Audio-Duration-Seconds"] = f"{float(dur):.3f}"
+            except Exception:
+                pass
+            return resp
+
+        _stt_api_router.JSONResponse = _SparkJSONResponse
+        _stt_api_router._spark_headers_patched = True
+except Exception:
+    pass
+
+
 @MULTIMODAL_REGISTRY.register_processor(
     CohereASRMultiModalProcessor,
     info=CohereASRProcessingInfo,
@@ -2044,6 +2120,8 @@ class CohereAsrForConditionalGeneration(
     )
 
     supports_transcription_only = True
+    supports_explicit_language_detection = True
+    auto_detect_languages: ClassVar[tuple[str, ...]] = ("en", "fr")
     supported_languages = ISO639_1_SUPPORTED_LANGS
     skip_warmup_audio_preprocessing = True
     no_space_languages = {"ja", "zh"}
@@ -2053,14 +2131,56 @@ class CohereAsrForConditionalGeneration(
 
     @classmethod
     def validate_language(cls, language: str | None) -> str | None:
+        if language is not None:
+            norm = language.strip().lower()
+            if norm in ("", "auto"):
+                language = None
         if language is None:
-            logger.warning(
-                "Defaulting to language='en'. If you wish to transcribe "
-                "audio in a different language, pass the `language` field "
-                "in the TranscriptionRequest."
-            )
-            language = "en"
+            return None
         return super().validate_language(language)
+
+    @classmethod
+    def get_language_detection_prompt(
+        cls,
+        audio: np.ndarray,
+        stt_config: SpeechToTextConfig,
+    ) -> PromptType:
+        # Cohere Transcribe decoder prefix up to <|emo:undefined|> = [13764, 7, 4, 16];
+        # next token is the ISO-639-1 language tag (<|en|>=62 or <|fr|>=69).
+        return TokensPrompt(
+            prompt_token_ids=[13764, 7, 4, 16],
+            multi_modal_data={"audio": (audio, stt_config.sample_rate)},
+        )
+
+    @classmethod
+    def get_language_token_ids(
+        cls,
+        tokenizer: Any,
+    ) -> list[int]:
+        token_ids: list[int] = []
+        for lang_code in cls.auto_detect_languages:
+            tid = tokenizer.convert_tokens_to_ids(f"<|{lang_code}|>")
+            if isinstance(tid, list):
+                tid = tid[0]
+            token_ids.append(int(tid))
+        return token_ids
+
+    @classmethod
+    def parse_language_detection_output(
+        cls,
+        token_ids: list[int],
+        tokenizer: Any,
+    ) -> str:
+        if not token_ids:
+            return "en"
+        decoded = tokenizer.decode([int(token_ids[0])], skip_special_tokens=False).strip()
+        if decoded.startswith("<|") and decoded.endswith("|>"):
+            lang_code = decoded[2:-2]
+            if lang_code in cls.supported_languages:
+                return lang_code
+        if int(token_ids[0]) == 69:
+            return "fr"
+        return "en" 
 
     @classmethod
     def get_generation_prompt(cls, stt_params: SpeechToTextParams) -> PromptType:

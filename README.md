@@ -32,16 +32,17 @@ restore one).
   `launch-vllm.sh`, `asr/` (installed copies of this repo).
 - `/etc/spark/inference.env`: model and state paths.
 - `/var/lib/spark/inference`: current model, watchdog log.
-- `dgx-router.service` runs `router.py` on port 8000; public via Tailscale
-  Funnel at `https://spark-de79.gazella-vector.ts.net`.
+- `dgx-router.service` runs `router.py` on port 8000; reachable over the
+  `lean-mesh` WireGuard overlay at `http://10.88.0.2:8000`.
 
 ## Authentication
 
-The router is public through Tailscale Funnel, so it requires an API key
-(`Authorization: Bearer <key>` or `x-api-key: <key>`) according to `ROUTER_AUTH`:
+The router requires an API key (`Authorization: Bearer <key>` or
+`x-api-key: <key>`) according to `ROUTER_AUTH`:
 
-- `external` (current): clients outside the tailnet need the key; tailnet
-  peers and local processes on the Spark do not.
+- `external` (current): clients outside trusted overlay networks (`10.88.0.0/16`
+  `lean-mesh` and `100.64.0.0/10`) need the key; mesh peers and local processes
+  on the Spark do not.
 - `all`: everyone except local processes on the Spark needs the key.
 - `off`: no authentication.
 
@@ -49,8 +50,8 @@ Keys come from `ROUTER_API_KEYS` (comma-separated, for rotation) in
 `/etc/spark/router.env` (root, 0600), loaded by the
 `dgx-router.service.d/zz-api-key.conf` drop-in. The key is stored in Bitwarden
 as `SPARK_ROUTER_API_KEY` (project `sensitive`). `GET /health` stays open.
-The client is identified by the last `X-Forwarded-For` entry set by
-`tailscale serve`; direct loopback connections without it are local.
+When behind a reverse proxy, the client is identified by the last
+`X-Forwarded-For` entry; direct loopback connections without it are local.
 
 Rotate: add the new key next to the old one, restart `dgx-router`, update
 clients (Orb's Spark provider, Bitwarden), then remove the old key.
