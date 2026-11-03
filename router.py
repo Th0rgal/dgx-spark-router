@@ -349,8 +349,10 @@ def strip_chatml_sentinels(body):
     return body
 
 class Handler(BaseHTTPRequestHandler):
+    timeout = CLIENT_SOCKET_TIMEOUT_SEC
+
     def setup(self):
-        self.connection.settimeout(CLIENT_SOCKET_TIMEOUT_SEC)
+        super().setup()
         with contextlib.suppress(OSError):
             self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -360,7 +362,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
             if hasattr(socket, "TCP_KEEPCNT"):
                 self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-        super().setup()
 
     def _client_disconnected(self):
         """Non-blocking check whether the client sent FIN/RST while we wait."""
