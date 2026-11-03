@@ -114,7 +114,7 @@ ENTRYPOINT_CMD="exec $(printf '%q ' "${args[@]}")"
 
 docker_cmd=(
     docker run -d
-    --restart unless-stopped
+    --restart no
     --name "$CONTAINER_NAME"
     --entrypoint bash
     --gpus all

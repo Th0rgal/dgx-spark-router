@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Multi-Model OpenAI-Compatible Router for DGX Spark"""
-import contextlib, hmac, ipaddress, os, json, subprocess, tempfile, time, threading, uuid
+import contextlib, hmac, http.client, ipaddress, os, json, select, socket, subprocess, tempfile, time, threading, uuid
 from datetime import datetime, timezone
 from email.parser import BytesParser
 from email.policy import default as _email_default_policy
@@ -33,6 +33,12 @@ SWAP_GRACE_SEC = int(os.environ.get("ROUTER_SWAP_GRACE_SEC", "600"))
 # sends none (empty = leave as-is). Keeps visible content from being eaten
 # by the hidden think block on small token budgets.
 DEFAULT_EFFORT = os.environ.get("ROUTER_DEFAULT_EFFORT", "low").strip().lower() or None
+# Downstream client socket write/idle timeout and SSE keepalive cadence.
+# Keeps router.chat_lock from deadlocking when a remote client aborts and
+# prevents Core's 45s header / first-chunk timeout from tripping during
+# long-context prefill or cold model swaps.
+CLIENT_SOCKET_TIMEOUT_SEC = float(os.environ.get("ROUTER_CLIENT_SOCKET_TIMEOUT_SEC", "45"))
+SSE_KEEPALIVE_SEC = float(os.environ.get("ROUTER_SSE_KEEPALIVE_SEC", "10"))
 
 # API keys (Authorization: Bearer <key> or x-api-key). ROUTER_AUTH:
 #   external - required for clients outside the tailnet (Tailscale Funnel)
@@ -186,13 +192,24 @@ class Router:
             return 500, {}, json.dumps({"error": str(e)}).encode()
 
     def open_stream(self, path, method, headers, body):
-        """Open an upstream response without buffering its SSE body."""
-        req = urllib.request.Request(f"http://localhost:{BACKEND_PORT}{path}", data=body, method=method)
-        for k, v in headers.items():
-            if k.lower() not in ('host', 'content-length', 'connection'):
-                req.add_header(k, v)
-        req.add_header('Content-Type', 'application/json')
-        return urllib.request.urlopen(req, timeout=1800)
+        """Open a raw HTTPConnection to the chat backend for unbuffered SSE forwarding."""
+        conn = http.client.HTTPConnection('127.0.0.1', BACKEND_PORT, timeout=1800)
+        try:
+            conn.connect()
+            with contextlib.suppress(OSError):
+                conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            conn.putrequest(method, path, skip_accept_encoding=True)
+            for k, v in headers.items():
+                if k.lower() not in ('host', 'content-length', 'connection', 'transfer-encoding'):
+                    conn.putheader(k, v)
+            conn.putheader('Content-Type', 'application/json')
+            conn.putheader('Content-Length', str(len(body)))
+            conn.endheaders(body)
+            return conn
+        except Exception:
+            with contextlib.suppress(Exception):
+                conn.close()
+            raise
 
 router = Router()
 
@@ -332,6 +349,49 @@ def strip_chatml_sentinels(body):
     return body
 
 class Handler(BaseHTTPRequestHandler):
+    def setup(self):
+        self.connection.settimeout(CLIENT_SOCKET_TIMEOUT_SEC)
+        with contextlib.suppress(OSError):
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            if hasattr(socket, "TCP_KEEPIDLE"):
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 15)
+            if hasattr(socket, "TCP_KEEPINTVL"):
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 5)
+            if hasattr(socket, "TCP_KEEPCNT"):
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
+        super().setup()
+
+    def _client_disconnected(self):
+        """Non-blocking check whether the client sent FIN/RST while we wait."""
+        try:
+            r, _, _ = select.select([self.connection], [], [], 0)
+            if not r:
+                return False
+            peek = self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+            return peek == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    def _send_sse_headers(self):
+        self.send_response(200)
+        self._cors()
+        self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache')
+        self.send_header('X-Accel-Buffering', 'no')
+        self.end_headers()
+        self.wfile.write(b": keepalive\n\n")
+        self.wfile.flush()
+
+    def _send_sse_error(self, msg, code="server_error", err_type="server_error"):
+        payload = json.dumps({
+            "error": {"message": str(msg), "type": err_type, "code": code}
+        }).encode("utf-8")
+        self.wfile.write(b"data: " + payload + b"\n\ndata: [DONE]\n\n")
+        self.wfile.flush()
+
     def log_message(self, f, *a):
         src = self.headers.get('X-Forwarded-For', '-') if self.headers else '-'
         ua = (self.headers.get('User-Agent', '-') if self.headers else '-')[:60]
@@ -682,73 +742,229 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": {"message": str(e)}}).encode())
                 return
-            with router.chat_lock, router.in_use() as use:
-                ok, err = router.ensure(requested)
-                if not ok:
-                    busy = isinstance(err, dict)
-                    msg = err["message"] if busy else err
-                    self._req_error = msg  # set before send_response, which writes the log line
-                    self.send_response(503 if busy else 400)
-                    self._cors()
-                    self.send_header('Content-Type', 'application/json')
-                    if busy:
-                        self.send_header('Retry-After', str(err["busy"]))
-                    self.end_headers()
-                    self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
+
+            canonical = router.resolve(requested)
+            if canonical not in VALID_MODELS:
+                msg = f"Unknown model: {requested}"
+                self._req_error = msg
+                self.send_response(400)
+                self._cors()
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
+                return
+
+            is_stream = bool(data.get('stream'))
+            sse_started = False
+
+            def acquire_chat_lock():
+                nonlocal sse_started
+                if not is_stream:
+                    while not router.chat_lock.acquire(timeout=2.0):
+                        if self._client_disconnected():
+                            return False
+                    return True
+                # Stream request: flush 200 text/event-stream + keepalive if queued
+                # behind an active turn so downstream proxies never hit a 45s header timeout.
+                if router.chat_lock.acquire(timeout=min(5.0, SSE_KEEPALIVE_SEC)):
+                    return True
+                self._send_sse_headers()
+                sse_started = True
+                next_ka = time.monotonic() + SSE_KEEPALIVE_SEC
+                while not router.chat_lock.acquire(timeout=1.0):
+                    if self._client_disconnected():
+                        return False
+                    if time.monotonic() >= next_ka:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                        next_ka = time.monotonic() + SSE_KEEPALIVE_SEC
+                return True
+
+            try:
+                if not acquire_chat_lock():
+                    self._req_error = "client disconnected while queued"
                     return
-                router.last_used[router.current] = time.time()
-                use["served"] = True
-                # Rewrite the alias to the backend's served model name. vLLM
-                # validates the model field against --served-model-name and 404s
-                # on anything else, so aliases like "qwen"/"flash-next" must become
-                # the canonical id before forwarding. (llama.cpp ignores it.)
-                data['model'] = router.resolve(requested)
-                # qwen3.8-flash-next and glm-5.3-flash are reasoning models: they
-                # open a hidden <think> block. With no effort set they think at the
-                # top budget, so a request with a small max_tokens spends it all on
-                # reasoning and returns EMPTY content (finish_reason=length). Default
-                # to DEFAULT_EFFORT (low) when the client sends none, matching Orb's
-                # own Ask client. An explicit reasoning_effort still wins.
-                effort = data.get('reasoning_effort')
-                if effort is None and DEFAULT_EFFORT and \
-                        not (data.get('chat_template_kwargs') or {}).get('reasoning_effort'):
-                    effort = DEFAULT_EFFORT
-                if data['model'] == 'glm-5.3-flash':
-                    # SparkLab reads the GLM budget (low/high/max) only from
-                    # chat_template_kwargs; without it the template thinks at max.
-                    if effort is not None:
-                        kwargs = data.setdefault('chat_template_kwargs', {})
-                        kwargs.setdefault('reasoning_effort', {
-                            'none': 'low', 'minimal': 'low', 'low': 'low', 'medium': 'high',
-                            'high': 'high', 'xhigh': 'max', 'max': 'max'}.get(str(effort).lower(), 'max'))
-                        data.pop('reasoning_effort', None)
-                elif data['model'] == 'qwen3.8-flash-next' and effort is not None:
-                    # The qwen3.8 chat template only accepts low/medium/xhigh.
-                    data['reasoning_effort'] = {'none': 'low', 'minimal': 'low',
-                        'high': 'xhigh'}.get(str(effort).lower(), str(effort).lower())
-                body = json.dumps(data).encode()
-                if data.get('stream'):
-                    try:
-                        with router.open_stream(self.path, 'POST', dict(self.headers), body) as upstream:
-                            self.send_response(upstream.status)
+            except OSError:
+                return
+
+            try:
+                with router.in_use() as use:
+                    if self._client_disconnected():
+                        self._req_error = "client disconnected before ensure"
+                        return
+
+                    # Fast check before starting a potentially 15-min cold load: if streaming
+                    # and backend is not immediately ready for `canonical`, check grace period
+                    # first so busy model-swap refusals still return HTTP 503 + Retry-After
+                    # when headers haven't been flushed yet.
+                    need_swap = (router.current != canonical) or (not router._backend_alive())
+                    if need_swap and router.current is not None and router.current != canonical and SWAP_GRACE_SEC > 0:
+                        idle = time.time() - router.last_used.get(router.current, 0)
+                        if idle < SWAP_GRACE_SEC:
+                            wait = int(SWAP_GRACE_SEC - idle) + 1
+                            msg = (f"{router.current} is loaded and in use; {canonical} can be loaded in {wait}s "
+                                   f"(only one chat model fits in memory)")
+                            self._req_error = msg
+                            if sse_started:
+                                self._send_sse_error(msg, code="model_busy", err_type="rate_limit_error")
+                            else:
+                                self.send_response(503)
+                                self._cors()
+                                self.send_header('Content-Type', 'application/json')
+                                self.send_header('Retry-After', str(wait))
+                                self.end_headers()
+                                self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
+                            return
+
+                    if is_stream and not sse_started:
+                        # Flush SSE headers + initial keepalive before ensure()/prefill so
+                        # long prompts (170+ KB, 50+ tools) or cold loads never trip 45s
+                        # header/first-byte deadlines.
+                        self._send_sse_headers()
+                        sse_started = True
+
+                    # Run ensure() while sending periodic SSE keepalives if a cold load is needed.
+                    if is_stream and need_swap:
+                        ensure_res = [None]
+                        def _run_ensure():
+                            ensure_res[0] = router.ensure(requested)
+                        t_ens = threading.Thread(target=_run_ensure, daemon=True)
+                        t_ens.start()
+                        next_ka = time.monotonic() + SSE_KEEPALIVE_SEC
+                        while t_ens.is_alive():
+                            t_ens.join(timeout=1.0)
+                            if t_ens.is_alive() and time.monotonic() >= next_ka:
+                                self.wfile.write(b": keepalive\n\n")
+                                self.wfile.flush()
+                                next_ka = time.monotonic() + SSE_KEEPALIVE_SEC
+                        ok, err = ensure_res[0] or (False, "ensure failed")
+                    else:
+                        ok, err = router.ensure(requested)
+
+                    if not ok:
+                        busy = isinstance(err, dict)
+                        msg = err["message"] if busy else err
+                        self._req_error = msg
+                        if sse_started:
+                            self._send_sse_error(
+                                msg,
+                                code="model_busy" if busy else "model_unavailable",
+                                err_type="rate_limit_error" if busy else "server_error",
+                            )
+                        else:
+                            self.send_response(503 if busy else 400)
                             self._cors()
-                            self.send_header('Content-Type', upstream.headers.get('Content-Type', 'text/event-stream'))
-                            self.send_header('Cache-Control', 'no-cache')
+                            self.send_header('Content-Type', 'application/json')
+                            if busy:
+                                self.send_header('Retry-After', str(err["busy"]))
                             self.end_headers()
-                            read_chunk = getattr(upstream, 'read1', upstream.read)
-                            while chunk := read_chunk(8192):
+                            self.wfile.write(json.dumps({"error": {"message": msg}}).encode())
+                        return
+
+                    router.last_used[router.current] = time.time()
+                    use["served"] = True
+                    # Rewrite the alias to the backend's served model name. vLLM
+                    # validates the model field against --served-model-name and 404s
+                    # on anything else, so aliases like "qwen"/"flash-next" must become
+                    # the canonical id before forwarding. (llama.cpp ignores it.)
+                    data['model'] = canonical
+                    # qwen3.8-flash-next and glm-5.3-flash are reasoning models: they
+                    # open a hidden <think> block. With no effort set they think at the
+                    # top budget, so a request with a small max_tokens spends it all on
+                    # reasoning and returns EMPTY content (finish_reason=length). Default
+                    # to DEFAULT_EFFORT (low) when the client sends none, matching Orb's
+                    # own Ask client. An explicit reasoning_effort still wins.
+                    effort = data.get('reasoning_effort')
+                    if effort is None and DEFAULT_EFFORT and \
+                            not (data.get('chat_template_kwargs') or {}).get('reasoning_effort'):
+                        effort = DEFAULT_EFFORT
+                    if data['model'] == 'glm-5.3-flash':
+                        # SparkLab reads the GLM budget (low/high/max) only from
+                        # chat_template_kwargs; without it the template thinks at max.
+                        if effort is not None:
+                            kwargs = data.setdefault('chat_template_kwargs', {})
+                            kwargs.setdefault('reasoning_effort', {
+                                'none': 'low', 'minimal': 'low', 'low': 'low', 'medium': 'high',
+                                'high': 'high', 'xhigh': 'max', 'max': 'max'}.get(str(effort).lower(), 'max'))
+                            data.pop('reasoning_effort', None)
+                    elif data['model'] == 'qwen3.8-flash-next' and effort is not None:
+                        # The qwen3.8 chat template only accepts low/medium/xhigh.
+                        data['reasoning_effort'] = {'none': 'low', 'minimal': 'low',
+                            'high': 'xhigh'}.get(str(effort).lower(), str(effort).lower())
+                    body = json.dumps(data).encode()
+                    if is_stream:
+                        conn = None
+                        try:
+                            conn = router.open_stream(self.path, 'POST', dict(self.headers), body)
+                            # Poll upstream socket during prefill so we emit SSE keepalives
+                            # every SSE_KEEPALIVE_SEC and abort immediately if client disconnects.
+                            while True:
+                                rlist, _, _ = select.select([conn.sock], [], [], SSE_KEEPALIVE_SEC)
+                                if rlist:
+                                    break
+                                if self._client_disconnected():
+                                    self._req_error = "client disconnected during prefill"
+                                    return
+                                self.wfile.write(b": keepalive\n\n")
+                                self.wfile.flush()
+
+                            upstream = conn.getresponse()
+                            if upstream.status >= 400:
+                                err_raw = upstream.read().decode("utf-8", errors="replace")
+                                self._req_error = f"upstream {upstream.status}: {err_raw[:120]}"
+                                err_msg = err_raw
+                                with contextlib.suppress(Exception):
+                                    parsed_err = json.loads(err_raw)
+                                    if isinstance(parsed_err.get("error"), dict):
+                                        err_msg = parsed_err["error"].get("message") or err_raw
+                                    elif parsed_err.get("message"):
+                                        err_msg = parsed_err["message"]
+                                err_type = "invalid_request_error" if 400 <= upstream.status < 500 else "server_error"
+                                self._send_sse_error(err_msg, code=f"http_{upstream.status}", err_type=err_type)
+                                return
+
+                            at_boundary = True
+                            while True:
+                                buffered = getattr(upstream.fp, "peek", lambda _n=0: b"")(1)
+                                if not buffered:
+                                    rlist, _, _ = select.select([conn.sock], [], [], SSE_KEEPALIVE_SEC)
+                                    if not rlist:
+                                        if self._client_disconnected():
+                                            self._req_error = "client disconnected mid-stream"
+                                            return
+                                        if at_boundary:
+                                            self.wfile.write(b": keepalive\n\n")
+                                            self.wfile.flush()
+                                        continue
+                                chunk = upstream.read1(8192)
+                                if not chunk:
+                                    break
+                                at_boundary = chunk.endswith(b"\n\n") or chunk.endswith(b"\r\n\r\n")
                                 self.wfile.write(chunk)
                                 self.wfile.flush()
-                        return
-                    except (BrokenPipeError, ConnectionResetError):
-                        return
-                    except urllib.error.HTTPError as e:
-                        self.send_response(e.code)
-                        self._cors()
-                        self.end_headers()
-                        self.wfile.write(e.read())
-                        return
-                s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
+                            return
+                        except (BrokenPipeError, ConnectionResetError, TimeoutError, socket.timeout):
+                            # Downstream client hung up or timed out; close upstream so vLLM
+                            # cancels the in-flight sequence and release chat_lock immediately.
+                            self._req_error = "client stream write timeout/reset"
+                            return
+                        except (http.client.HTTPException, OSError) as e:
+                            # Upstream vLLM crashed or reset mid-flight: clear cached state so
+                            # the next request checks health and relaunches if needed.
+                            if not router._backend_alive():
+                                router.current = None
+                            self._req_error = f"upstream stream error: {e}"
+                            with contextlib.suppress(OSError):
+                                if sse_started:
+                                    self._send_sse_error(f"backend stream interrupted: {e}")
+                            return
+                        finally:
+                            if conn is not None:
+                                with contextlib.suppress(Exception):
+                                    conn.close()
+                    s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
+            finally:
+                router.chat_lock.release()
         else:
             s, h, b = router.forward(self.path, 'POST', dict(self.headers), body)
         self.send_response(s)
