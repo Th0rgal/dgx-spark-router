@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  spark-daemon-lean:
+    name: Spark Daemon (Lean 4.35.0 + LeanSys + turbo-lean Audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache elan & Lean build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            spark-daemon/.lake/build
+            spark-daemon/.lake/packages
+          key: spark-lean-${{ runner.os }}-${{ hashFiles('spark-daemon/lean-toolchain', 'spark-daemon/lakefile.lean', 'spark-daemon/lake-manifest.json', 'spark-daemon/Spark.lean', 'spark-daemon/Spark/**/*.lean') }}
+          restore-keys: |
+            spark-lean-${{ runner.os }}-
+
+      - name: Install elan and Lean 4.35.0 toolchain
+        run: |
+          if [ ! -x "$HOME/.elan/bin/lake" ]; then
+            curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          fi
+          export PATH="$HOME/.elan/bin:$PATH"
+          elan toolchain install "$(cat spark-daemon/lean-toolchain)"
+
+      - name: Install & cache turbo-lean spec auditor
+        uses: Th0rgal/turbo-lean@3fea4a72fcd6d55cfe172c6b5a2651ad6dea1ef6
+        with:
+          project-dir: "spark-daemon"
+          command: cache-only
+
+      - name: Run spark-daemon Lean 4 build, E2E SSE self-test, turbo-lean 6/6 spec audit, and TCB hygiene
+        run: |
+          export PATH="$HOME/.elan/bin:$PATH"
+          bash spark-daemon/ci_verify.sh
+
+      - name: Python router syntax check
+        run: python3 -m py_compile router.py super_v3_reasoning_parser.py
